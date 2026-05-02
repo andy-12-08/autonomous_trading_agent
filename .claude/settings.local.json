@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(sqlite3 *)",
+      "Bash(pip show *)",
+      "Bash(pip3 show *)",
+      "Bash(pip list *)",
+      "Bash(grep -n \"^\\\\\"\\\\\"\\\\\"$\\\\|^SYSTEM_PROMPT\\\\|^STUDY_SYSTEM_PROMPT\\\\|^def \\\\|^class \" agents/agent.py)",
+      "Bash(grep -n \"^\\\\\"\\\\\"\\\\\"$\\\\|^SYSTEM_PROMPT\\\\|^STUDY_SYSTEM_PROMPT\\\\|^def \\\\|^class \" agents/analyst.py)"
+    ]
+  }
+}
