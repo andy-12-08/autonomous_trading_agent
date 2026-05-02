@@ -1,0 +1,42 @@
+flowchart TB
+  SCH["<b>SCHEDULER</b><br/>US equity session clock (ET) · 2-minute position pass · 10-minute full scan · startup kick · weekly backtest slot"]
+
+  ORCH["<b>ORCHESTRATOR</b><br/>Session book: deployed capital, realized P&amp;L, trade count · locked updates so overlapping session paths don’t lose P&amp;L · scan overlap guard and eight-minute stall watchdog on the discovery loop"]
+
+  subgraph MA["Market Analyst"]
+    MA1["<b>PLAN</b><br/>Morning study: macro calendar, yield curve, pre-market range, short interest, gap tape → daily_plan · session score bands · warm liquidity screens ahead of RTH"]
+    MA2["<b>STANCE</b><br/>risk_posture stand_aside / conservative · FOMC vs SPY unlock · can block new risk for the session"]
+    MA1 --> MA2
+  end
+
+  subgraph PM["Position Manager"]
+    PM1["<b>HOLDINGS</b><br/>Street book vs journal · breakeven + trailing protective stops · ratchet take-profit on runners · refill missing stop children · bracket fills → realized P&amp;L"]
+    PM2["<b>EXITS</b><br/>TIME_STOP · partial scale-out at TP path · GFV settlement gate · market sells"]
+    PM3["<b>CLOSE</b><br/>End-of-session flatten · daily summary · persist next-session dynamic watchlist"]
+    PM4["<b>NOTIFIER</b><br/>Email: trade notices and end-of-day recap"]
+    PM1 --> PM2 --> PM3 --> PM4
+  end
+
+  subgraph SCAN["Scan and trade pipeline"]
+    SCR["<b>SCREENER</b><br/>Universe from liquidity snapshot, most actives, gainers, morning plan and watchlist merge"]
+    SN["<b>SCANNER</b><br/>After circuit breaker, VIX × yield stress, tape regime, expectancy confidence bar, and live snapshot: multi-timeframe bars, RS vs SPY, signal score vs regular/midday gate, sector ETF rotation"]
+    ENR["<b>ENRICHMENT</b><br/>Parallel alt-data pull (20s cap): headlines, unusual options, insider, dark pool, short interest, pre-market hi/lo layered on each name"]
+    AG["<b>TRADING AGENT</b><br/>Sector bucket · earnings blackout · cooling strip · LLM on top 20 with settled cash, exposure, drawdown, bucket context"]
+    RK["<b>RISK MANAGER</b><br/>Entry path: size vs ATR and VIX/yield multipliers, exposure &amp; drawdown caps, fresh 8-K gate, NBBO spread floor · GFV on exits"]
+    EX["<b>EXECUTION</b><br/>Kelly trim from rolling expectancy · bracket limit entry with SL/TP legs · market and partial exits · paper mode skips live route"]
+    SCR --> SN --> ENR --> AG --> RK --> EX
+  end
+
+  BRK["<b>BROKER</b><br/>Alpaca paper/live: bracket and market orders, positions, bars and NBBO quotes"]
+  DB[("<b>DATABASE</b><br/>On-disk trade journal: decisions, open lines, daily summaries, expectancy history")]
+
+  SCH --> ORCH
+  ORCH --> MA
+  ORCH --> PM
+  ORCH --> SCAN
+
+  EX --> BRK
+  PM1 --> BRK
+  MA2 --> DB
+  EX --> DB
+  PM2 --> DB
