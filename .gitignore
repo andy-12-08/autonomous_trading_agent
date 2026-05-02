@@ -32,11 +32,12 @@ dynamic_watchlist.json
 *.log
 logs/
 
-# IDE
+# IDE & tools
 .vscode/
 .idea/
 *.swp
 *.swo
+.claude/
 
 # OS
 .DS_Store
