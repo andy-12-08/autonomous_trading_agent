@@ -159,6 +159,8 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             self.broker.close_position(symbol)
             self.database.remove_position(symbol)
             self.gfv_tracker.remove_buy(symbol)
+            with self._state_lock:
+                self._daily_pnl += pnl
             self.database.record_decision(symbol, "SELL", price=current_price, qty=qty,
                             pnl=pnl, reasoning="EOD forced close — no overnight holds")
             self.database.update_outcome(symbol, "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven", pnl)

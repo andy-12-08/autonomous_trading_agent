@@ -42,8 +42,8 @@ class PositionsMixin:
                                     stop_loss=breakeven,
                                     reasoning="Stop moved to breakeven at +1.0% gain")
 
-            # Activate trailing stop at +TRAILING_STOP_TRIGGER_PCT
-            if self.risk_manager.should_trail(current_price, entry_price) and not trailing:
+            # Activate trailing stop at +TRAILING_STOP_TRIGGER_PCT (elif: skip if breakeven just fired)
+            elif self.risk_manager.should_trail(current_price, entry_price) and not trailing:
                 new_stop = self.risk_manager.new_trailing_stop(current_price)
                 ok, _ = self.risk_manager.approve_stop_update(symbol, new_stop, stop_loss)
                 if ok:
@@ -269,9 +269,16 @@ class PositionsMixin:
         if (hour == config.MARKET_CLOSE_HOUR and minute >= config.MARKET_CLOSE_MIN) or \
            hour > config.MARKET_CLOSE_HOUR:
             if not self._eod_done:
-                self._eod_done = True
-                self.eod_close_all()
-                self.write_daily_summary()
+                try:
+                    self.eod_close_all()
+                    self._eod_done = True
+                except Exception as exc:
+                    log.error("EOD close failed: %s — will retry on next tick", exc)
+                    return
+                try:
+                    self.write_daily_summary()
+                except Exception as exc:
+                    log.error("EOD summary failed: %s", exc)
             else:
                 log.info("EOD already completed for today — skipping cycle")
             return

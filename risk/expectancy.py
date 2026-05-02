@@ -336,7 +336,7 @@ class ExpectancyEngine:
         if len(rows) < 10:
             return None
 
-        now        = datetime.utcnow()
+        now        = datetime.now(timezone.utc)
         cutoff_7d  = (now - timedelta(days=7)).isoformat()
         cutoff_90d = (now - timedelta(days=90)).isoformat()
 

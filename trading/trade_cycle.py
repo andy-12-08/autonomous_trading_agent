@@ -103,12 +103,19 @@ class TradeCycleMixin:
                         "Macro override: SPY +%.2f%% since open — downgrading "
                         "stand_aside → conservative.", spy_gain
                     )
+                    # fall through — continue scan in conservative mode
                 else:
                     reason = (self._daily_plan.get("special_warnings") or ["macro/market conditions"])[0]
                     log.warning("SCAN POSTURE: STAND_ASIDE — %s", reason[:120])
+                    return
             elif is_fomc:
                 reason = (self._daily_plan.get("special_warnings") or ["FOMC day — locked until 14:30 ET"])[0]
                 log.warning("SCAN POSTURE: STAND_ASIDE (FOMC locked) — %s", reason[:120])
+                return
+            else:
+                # SPY bars unavailable — cannot verify recovery; honour stand-aside
+                log.warning("SCAN POSTURE: STAND_ASIDE — SPY bars unavailable, staying out")
+                return
         elif self._daily_plan and self._daily_plan.get("risk_posture") == "conservative":
             reason = (self._daily_plan.get("special_warnings") or ["macro/market conditions"])[0]
             log.warning("SCAN POSTURE: CONSERVATIVE — %s", reason[:120])

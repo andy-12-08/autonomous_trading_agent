@@ -335,7 +335,7 @@ class ExecutorMixin:
                                     confidence=confidence,
                                     slippage_dollars=round(slippage_dollars, 4))
                     self.notifier.send_trade_alert(
-                        action="BUY", symbol=symbol, price=price, qty=qty,
+                        action="BUY", symbol=symbol, price=fill_price, qty=qty,
                         equity=equity, daily_pnl=effective_daily_pnl,
                         deployed=self._deployed_today, positions_open=num_positions,
                         stop_loss=stop_loss, take_profit=take_profit,
@@ -362,7 +362,7 @@ class ExecutorMixin:
                 entry_price   = pos_data.get("entry_price", 0)
 
                 if action == "PARTIAL_SELL":
-                    qty = total_qty // 2 or total_qty
+                    qty = max(1, int(total_qty // 2))
                     # P&L for the shares actually sold, not full-position unrealized
                     pnl = (current_price - entry_price) * qty if entry_price else 0
                 else:
