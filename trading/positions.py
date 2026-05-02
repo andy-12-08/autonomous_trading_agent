@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import config
 from core.database import log
 
@@ -129,7 +129,8 @@ class PositionsMixin:
                                     setup_type=setup_type,
                                     reasoning="Bracket order triggered (stop-loss or take-profit hit by Alpaca)")
                     self.database.update_outcome(symbol, outcome, pnl)
-                    self._daily_pnl += pnl
+                    with self._state_lock:
+                        self._daily_pnl += pnl
                     log.info("Bracket exit captured: %s | fill=%.2f entry=%.2f qty=%.0f pnl=%+.2f [%s]",
                              symbol, fill_price, entry_price, qty, pnl, outcome)
                     self.notifier.send_trade_alert(
@@ -177,11 +178,14 @@ class PositionsMixin:
             if not entry_ts_str:
                 continue
             try:
-                entry_dt = datetime.fromisoformat(entry_ts_str).replace(tzinfo=self._ET)
+                entry_dt = datetime.fromisoformat(entry_ts_str)
+                if entry_dt.tzinfo is None:
+                    # legacy naive timestamp — treat as UTC
+                    entry_dt = entry_dt.replace(tzinfo=timezone.utc)
             except Exception:
                 continue
 
-            age_minutes = (now - entry_dt).total_seconds() / 60
+            age_minutes = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 60
             if age_minutes < config.TIME_STOP_MINUTES:
                 continue
 

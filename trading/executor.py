@@ -320,8 +320,9 @@ class ExecutorMixin:
                                  symbol, fill_price, price, slippage_per_sh, slippage_dollars)
                     cost       = fill_price * qty
                     setup_type = d.get("setup_type") or setup_type_hint or None
-                    self._deployed_today        += cost
-                    self._trades_today          += 1
+                    with self._state_lock:
+                        self._deployed_today    += cost
+                        self._trades_today      += 1
                     settled_cash                -= cost
                     num_positions               += 1
                     open_symbols.add(symbol)
@@ -357,16 +358,21 @@ class ExecutorMixin:
 
                 pos_data      = next((p for p in positions_snapshot if p["symbol"] == symbol), {})
                 current_price = pos_data.get("current_price") or d.get("price") or 0
-                pnl           = pos_data.get("pnl", 0.0)
+                total_qty     = float(pos_data.get("qty", 0))
+                entry_price   = pos_data.get("entry_price", 0)
 
                 if action == "PARTIAL_SELL":
-                    qty = float(pos_data.get("qty", 0)) // 2 or float(pos_data.get("qty", 0))
+                    qty = total_qty // 2 or total_qty
+                    # P&L for the shares actually sold, not full-position unrealized
+                    pnl = (current_price - entry_price) * qty if entry_price else 0
                 else:
-                    qty = float(pos_data.get("qty", 0))
+                    qty = total_qty
+                    pnl = pos_data.get("pnl", 0.0)
 
                 order = self.broker.place_market_order(symbol, qty, "SELL")
                 if order:
-                    self._daily_pnl += pnl
+                    with self._state_lock:
+                        self._daily_pnl += pnl
                     setup_type  = pos_data.get("setup_type") or d.get("setup_type")
                     self.database.record_decision(symbol, action, current_price, qty, pnl=pnl,
                                     reasoning=full_reason, setup_type=setup_type)

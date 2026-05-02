@@ -52,7 +52,7 @@ class RiskManager:
         if trades_today >= config.MAX_TRADES_PER_DAY:
             return False, f"Max trades/day ({config.MAX_TRADES_PER_DAY}) reached"
 
-        # Rule 7: total exposure cap (≤ 30% equity)
+        # Rule 7: total exposure cap (≤ MAX_TOTAL_EXPOSURE_PCT of equity)
         if (deployed_today + cost) > total_equity * config.MAX_TOTAL_EXPOSURE_PCT:
             cap = total_equity * config.MAX_TOTAL_EXPOSURE_PCT
             return False, (f"Exposure cap: ${deployed_today + cost:.0f} "

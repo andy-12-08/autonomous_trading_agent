@@ -1,7 +1,7 @@
 import sqlite3
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 import config
 
 logging.basicConfig(
@@ -147,7 +147,7 @@ class Database:
                 pnl, reasoning, setup_type, confidence, signal_score, veto_rule,
                 slippage_dollars)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (datetime.utcnow().isoformat(), symbol, action,
+            (datetime.now(timezone.utc).isoformat(), symbol, action,
              price, qty, stop_loss, take_profit, pnl, reasoning, setup_type,
              confidence, signal_score, veto_rule, slippage_dollars),
         )
@@ -214,7 +214,7 @@ class Database:
                 trailing, highest_price, partial_taken, setup_type)
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (symbol, entry_price, qty, stop_loss, take_profit,
-             entry_ts or datetime.utcnow().isoformat(),
+             entry_ts or datetime.now(timezone.utc).isoformat(),
              int(trailing), highest_price or entry_price, int(partial_taken), setup_type),
         )
         conn.commit()

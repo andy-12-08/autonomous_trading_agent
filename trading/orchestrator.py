@@ -71,6 +71,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         self._key_levels_cache:     dict           = {}
         self._eod_done:             bool           = False
         self._daily_pre_passed:     set            = set()
+        self._scan_active:          bool           = False
 
         self._state_lock = threading.Lock()
 
@@ -210,16 +211,23 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
     def run_scan_and_trade(self):
         """Run _scan_body in a daemon thread with a wall-clock timeout.
 
-        Returns:
-            None.
+        Skips the tick entirely if the previous scan is still alive — prevents
+        overlapping scans that would duplicate state mutations and heavy API work.
         """
-        t = threading.Thread(target=self._scan_body, daemon=True, name="scan-body")
-        t.start()
-        t.join(timeout=self._SCAN_TIMEOUT_SECONDS)
-        if t.is_alive():
-            log.error(
-                "SCAN TIMEOUT after %ds — scan thread is stuck (hung API call?). "
-                "Releasing scheduler lock so next 10-min cycle can start.",
-                self._SCAN_TIMEOUT_SECONDS,
-            )
+        if self._scan_active:
+            log.warning("Previous scan still running — skipping this 10-min tick")
+            return
+        self._scan_active = True
+        try:
+            t = threading.Thread(target=self._scan_body, daemon=True, name="scan-body")
+            t.start()
+            t.join(timeout=self._SCAN_TIMEOUT_SECONDS)
+            if t.is_alive():
+                log.error(
+                    "SCAN TIMEOUT after %ds — scan thread is stuck (hung API call?). "
+                    "Releasing scheduler lock so next 10-min cycle can start.",
+                    self._SCAN_TIMEOUT_SECONDS,
+                )
+        finally:
+            self._scan_active = False
 
