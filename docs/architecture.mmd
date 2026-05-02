@@ -1,33 +1,30 @@
-flowchart LR
+flowchart TD
 
-  SCHED["⏰ Scheduler\nMarket clock in ET"]
+  SCHED["⏰ Scheduler"]
+  MORNING["📋 Morning Study 8:30–9:35 AM\nMacro · pre-market · news → LLM → daily plan + posture"]
+  BACKTEST["🔬 Backtester · Sunday 8 AM"]
+  DB[("💾 SQLite")]
+  BROKER["🏦 Broker"]
+  EOD["🏁 EOD 3:45 PM · flatten · summary · email"]
+  LEARN["📈 Learning Loop\nExpectancy · Kelly · cooling · confidence bar"]
 
-  MORNING["📋 Morning Study  8:30–9:35 AM\nMacro · pre-market · news → LLM → daily plan + posture"]
-
-  subgraph CYCLE["🔄 Trade Cycle  every 10 min"]
-    GUARD["🛡️ Market Context\nVIX · regime · circuit breaker · posture"]
-    SCREEN["🔍 Screener\n~150 symbols ranked by volume × move × rank"]
-    SCAN["📊 Scanner\nBars + 40 indicators → signal score"]
-    ENRICH["📦 Enrichment\nOptions · dark pool · insider · news  (parallel · 20 s cap)"]
-    PREFILTER["🔎 Pre-Filter\nBucket · earnings blackout · cooling · cap 20"]
-    AI["🤖 LLM\nBUY / SKIP · entry · stop · target · confidence"]
-    RISK["⚖️ Risk Gates + Sizing\nExposure · drawdown · spread · ATR · VIX · Kelly"]
-    ORDER["✅ Order Placed\nBracket: entry · stop-loss · take-profit"]
+  subgraph CYCLE["🔄 Trade Cycle — every 10 min"]
+    GUARD["🛡️ Market Context · VIX · regime · circuit breaker · posture"]
+    SCREEN["🔍 Screener · ~150 symbols ranked by volume × move × rank"]
+    SCAN["📊 Scanner · bars + 40 indicators → signal score"]
+    ENRICH["📦 Enrichment · options · dark pool · insider · news"]
+    PREFILTER["🔎 Pre-Filter · bucket · earnings · cooling · cap 20"]
+    AI["🤖 LLM · BUY / SKIP · entry · stop · target · confidence"]
+    RISK["⚖️ Risk Gates · exposure · drawdown · spread · sizing"]
+    ORDER["✅ Order · bracket: entry · stop-loss · take-profit"]
     GUARD --> SCREEN --> SCAN --> ENRICH --> PREFILTER --> AI --> RISK --> ORDER
   end
 
-  subgraph PM["⏱ Position Manager  every 2 min"]
+  subgraph PM["⏱ Position Manager — every 2 min"]
     MONITOR["Breakeven · trailing stop · partial profit · time-stop"]
     CLOSE["💰 Close · log P&L"]
     MONITOR -->|"exit triggered"| CLOSE
   end
-
-  LEARN["📈 Learning Loop\nExpectancy · Kelly · cooling · setup suppression · confidence bar"]
-  EOD["🏁 EOD 3:45 PM\nFlatten all · daily summary · email recap"]
-
-  DB[("💾 SQLite")]
-  BROKER["🏦 Broker"]
-  BACKTEST["🔬 Backtester  Sunday 8 AM"]
 
   SCHED -->|"every 10 min"| CYCLE
   SCHED -->|"every 2 min"| PM
