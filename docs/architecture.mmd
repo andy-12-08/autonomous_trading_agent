@@ -1,8 +1,8 @@
-flowchart TD
+flowchart LR
 
   SCHED["⏰ Scheduler\nMarket clock in ET"]
 
-  MORNING["📋 Morning Study  8:30–9:35 AM\nMacro · pre-market · news → Claude → daily plan + posture"]
+  MORNING["📋 Morning Study  8:30–9:35 AM\nMacro · pre-market · news → LLM → daily plan + posture"]
 
   subgraph CYCLE["🔄 Trade Cycle  every 10 min"]
     GUARD["🛡️ Market Context\nVIX · regime · circuit breaker · posture"]
@@ -10,7 +10,7 @@ flowchart TD
     SCAN["📊 Scanner\nBars + 40 indicators → signal score"]
     ENRICH["📦 Enrichment\nOptions · dark pool · insider · news  (parallel · 20 s cap)"]
     PREFILTER["🔎 Pre-Filter\nBucket · earnings blackout · cooling · cap 20"]
-    AI["🤖 Claude LLM\nBUY / SKIP · entry · stop · target · confidence"]
+    AI["🤖 LLM\nBUY / SKIP · entry · stop · target · confidence"]
     RISK["⚖️ Risk Gates + Sizing\nExposure · drawdown · spread · ATR · VIX · Kelly"]
     ORDER["✅ Order Placed\nBracket: entry · stop-loss · take-profit"]
     GUARD --> SCREEN --> SCAN --> ENRICH --> PREFILTER --> AI --> RISK --> ORDER
