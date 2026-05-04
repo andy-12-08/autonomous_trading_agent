@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import requests
@@ -214,33 +214,34 @@ class StudyDataMixin:
             symbol_performance (wins/losses/total_pnl per symbol), total_trades,
             total_pnl.
         """
-        conn = sqlite3.connect(config.DB_PATH)
+        conn = sqlite3.connect(config.DB_PATH, timeout=10)
         conn.row_factory = sqlite3.Row
+        try:
+            all_decisions = [dict(r) for r in conn.execute(
+                "SELECT * FROM decisions ORDER BY ts DESC LIMIT 200"
+            ).fetchall()]
 
-        all_decisions = [dict(r) for r in conn.execute(
-            "SELECT * FROM decisions ORDER BY ts DESC LIMIT 200"
-        ).fetchall()]
+            daily_summaries = [dict(r) for r in conn.execute(
+                "SELECT * FROM daily_summary ORDER BY date DESC LIMIT 10"
+            ).fetchall()]
 
-        daily_summaries = [dict(r) for r in conn.execute(
-            "SELECT * FROM daily_summary ORDER BY date DESC LIMIT 10"
-        ).fetchall()]
+            setup_stats: dict[str, dict] = {}
+            for d in all_decisions:
+                pnl    = d.get("pnl") or 0
+                action = d.get("action", "")
+                if action not in ("BUY", "SELL", "PARTIAL_SELL"):
+                    continue
+                sym = d.get("symbol", "")
+                if sym not in setup_stats:
+                    setup_stats[sym] = {"wins": 0, "losses": 0, "total_pnl": 0}
+                if pnl > 0:
+                    setup_stats[sym]["wins"] += 1
+                elif pnl < 0:
+                    setup_stats[sym]["losses"] += 1
+                setup_stats[sym]["total_pnl"] += pnl
+        finally:
+            conn.close()
 
-        setup_stats: dict[str, dict] = {}
-        for d in all_decisions:
-            pnl    = d.get("pnl") or 0
-            action = d.get("action", "")
-            if action not in ("BUY", "SELL", "PARTIAL_SELL"):
-                continue
-            sym = d.get("symbol", "")
-            if sym not in setup_stats:
-                setup_stats[sym] = {"wins": 0, "losses": 0, "total_pnl": 0}
-            if pnl > 0:
-                setup_stats[sym]["wins"] += 1
-            elif pnl < 0:
-                setup_stats[sym]["losses"] += 1
-            setup_stats[sym]["total_pnl"] += pnl
-
-        conn.close()
         return {
             "recent_decisions":   all_decisions[:50],
             "daily_summaries":    daily_summaries,
@@ -262,17 +263,19 @@ class StudyDataMixin:
             skip_time, skip_price, max_gain_pct, max_loss_pct, net_60min_pct,
             was_miss, skip_reason, signal_score, veto_rule.
         """
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        yesterday = (datetime.now(config.ET).date() - timedelta(days=1)).isoformat()
 
-        conn = sqlite3.connect(config.DB_PATH)
+        conn = sqlite3.connect(config.DB_PATH, timeout=10)
         conn.row_factory = sqlite3.Row
-        skips = [dict(r) for r in conn.execute(
-            """SELECT symbol, ts, reasoning, signal_score, veto_rule FROM decisions
-               WHERE ts LIKE ? AND action = 'SKIP'
-               ORDER BY ts""",
-            (f"{yesterday}%",)
-        ).fetchall()]
-        conn.close()
+        try:
+            skips = [dict(r) for r in conn.execute(
+                """SELECT symbol, ts, reasoning, signal_score, veto_rule FROM decisions
+                   WHERE ts LIKE ? AND action = 'SKIP'
+                   ORDER BY ts""",
+                (f"{yesterday}%",)
+            ).fetchall()]
+        finally:
+            conn.close()
 
         if not skips:
             return []

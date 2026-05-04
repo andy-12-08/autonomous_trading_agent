@@ -1,6 +1,5 @@
 import sqlite3
 import logging
-import json
 from datetime import datetime, timezone
 import config
 
@@ -18,19 +17,24 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 
 class Database:
+    """SQLite persistence for decisions, positions, daily summaries, and plans."""
+
     def __init__(self, db_path: str):
-        """Args:
-            db_path: Path to the SQLite database file.
+        """Store the database path; each public method opens its own connection.
+
+        Args:
+            db_path: Filesystem path to the SQLite database file.
         """
         self.db_path = db_path
 
     def init_db(self) -> None:
-        """Create tables (decisions, daily_summary, positions, daily_plans, …) and migrate columns.
+        """Create application tables and apply lightweight schema migrations.
 
         Returns:
             None.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        conn.execute("PRAGMA journal_mode=WAL")
         c = conn.cursor()
         c.execute("""
             CREATE TABLE IF NOT EXISTS decisions (
@@ -53,7 +57,6 @@ class Database:
                 slippage_dollars  REAL
             )
         """)
-        # Migrate existing DB — add columns if they don't exist yet
         for col_sql in (
             "ALTER TABLE decisions ADD COLUMN setup_type TEXT",
             "ALTER TABLE decisions ADD COLUMN confidence INTEGER",
@@ -63,8 +66,8 @@ class Database:
         ):
             try:
                 c.execute(col_sql)
-            except Exception:
-                pass  # column already exists
+            except sqlite3.OperationalError:
+                pass
         c.execute("""
             CREATE TABLE IF NOT EXISTS daily_summary (
                 date      TEXT PRIMARY KEY,
@@ -90,14 +93,13 @@ class Database:
                 setup_type    TEXT
             )
         """)
-        # Migrate existing DB — add columns if absent
         for col_sql in (
             "ALTER TABLE positions ADD COLUMN partial_taken INTEGER DEFAULT 0",
             "ALTER TABLE positions ADD COLUMN setup_type TEXT",
         ):
             try:
                 c.execute(col_sql)
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
         c.execute("""
             CREATE TABLE IF NOT EXISTS gfv_positions (
@@ -123,15 +125,15 @@ class Database:
         """Record a trading decision (BUY, SELL, SKIP, HOLD) to the database.
 
         Args:
-            symbol: Ticker symbol (e.g. "AAPL").
-            action: Decision type — one of BUY, SELL, SKIP, HOLD.
+            symbol: Ticker symbol string.
+            action: Decision type string such as BUY, SELL, SKIP, or HOLD.
             price: Fill or reference price at decision time.
             qty: Share quantity involved in the decision.
             stop_loss: Stop-loss price level.
             take_profit: Take-profit price level.
             pnl: Realized P&L if this is a closing action.
             reasoning: Human-readable explanation of the decision.
-            setup_type: Strategy label (e.g. "momentum", "reversal").
+            setup_type: Strategy label string such as momentum or reversal.
             confidence: Integer confidence score (0–100).
             signal_score: Composite signal score from the scorer.
             veto_rule: Name of the risk rule that blocked a trade, if any.
@@ -140,7 +142,7 @@ class Database:
         Returns:
             None.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute(
             """INSERT INTO decisions
                (ts, symbol, action, price, qty, stop_loss, take_profit,
@@ -163,11 +165,14 @@ class Database:
         """Link the most recent unlinked BUY for this symbol to its trade outcome.
 
         Args:
-            symbol: Ticker symbol whose BUY record should be updated.
-            outcome: Result label, e.g. "WIN" or "LOSS".
-            outcome_pnl: Realized P&L for the completed trade.
+            symbol: Ticker whose most recent open BUY row should be updated.
+            outcome: Result label such as win, loss, or breakeven.
+            outcome_pnl: Realized P and L for the completed trade.
+
+        Returns:
+            None.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute(
             """UPDATE decisions SET outcome=?, outcome_pnl=?
                WHERE id = (
@@ -197,11 +202,13 @@ class Database:
             trailing: Whether trailing stop logic is active.
             highest_price: Highest price seen since entry (used for trailing stops).
             partial_taken: Whether a partial profit has already been taken.
-            entry_ts: ISO timestamp of entry; defaults to utcnow if not provided.
+            entry_ts: ISO timestamp of entry; defaults to current UTC if omitted.
             setup_type: Strategy label for the position.
+
+        Returns:
+            None.
         """
-        conn = sqlite3.connect(self.db_path)
-        # Preserve existing setup_type when not explicitly provided
+        conn = sqlite3.connect(self.db_path, timeout=10)
         if setup_type is None:
             row = conn.execute(
                 "SELECT setup_type FROM positions WHERE symbol=?", (symbol,)
@@ -225,19 +232,22 @@ class Database:
 
         Args:
             symbol: Ticker symbol of the position to remove.
+
+        Returns:
+            None.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
         conn.commit()
         conn.close()
 
     def get_open_positions_db(self) -> list[dict]:
-        """Return all rows from the positions table as a list of dicts.
+        """Return every row from the positions table as plain dicts.
 
         Returns:
-            List of position dicts, one per open position tracked in the DB.
+            List of one dict per stored position row.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM positions").fetchall()
         conn.close()
@@ -252,7 +262,7 @@ class Database:
         Returns:
             List of decision dicts ordered newest-first.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT * FROM decisions ORDER BY ts DESC LIMIT ?", (limit,)
@@ -265,15 +275,18 @@ class Database:
         """Insert or replace the daily trading summary for a given date.
 
         Args:
-            date_str: ISO date string (YYYY-MM-DD) for the trading day.
+            date_str: ISO calendar date string for the trading day.
             trades: Total number of completed trades.
             wins: Number of profitable trades.
             losses: Number of losing trades.
-            gross_pnl: Total P&L before any fees/commissions.
-            net_pnl: Total P&L after fees/commissions.
+            gross_pnl: Total P and L before fees or commissions.
+            net_pnl: Total P and L after fees or commissions.
             notes: Optional free-text notes about the day.
+
+        Returns:
+            None.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute(
             """INSERT OR REPLACE INTO daily_summary
                (date, trades, wins, losses, gross_pnl, net_pnl, notes)

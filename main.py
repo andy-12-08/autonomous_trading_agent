@@ -1,3 +1,5 @@
+"""Entry point: builds the trading stack, runs APScheduler jobs for live trading."""
+
 import argparse
 import signal
 import sys
@@ -13,11 +15,27 @@ from core.database import log
 
 
 def graceful_exit(sig, frame):
+    """Handle SIGINT or SIGTERM by logging and exiting the process.
+
+    Args:
+        sig: Signal number from the OS.
+        frame: Current stack frame (unused).
+
+    Returns:
+        Does not return; calls sys.exit(0).
+    """
     log.info("Shutdown signal received — stopping bot")
     sys.exit(0)
 
 
 def main():
+    """Parse CLI flags, start the scheduler, and block until interrupt.
+
+    Recognizes optional flags --dry-run and --force from sys.argv.
+
+    Returns:
+        None under normal loop exit; may call sys.exit from the signal handler.
+    """
     parser = argparse.ArgumentParser(description="Autonomous stock trading bot")
     parser.add_argument(
         "--dry-run",

@@ -326,7 +326,7 @@ class ExpectancyEngine:
         otherwise None (healthy). Requires at least 10 BUY decisions with
         confidence recorded.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         rows = conn.execute(
             """SELECT confidence, ts FROM decisions
                WHERE action = 'BUY' AND confidence IS NOT NULL

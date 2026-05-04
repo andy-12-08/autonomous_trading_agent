@@ -1,41 +1,24 @@
-import time
-import requests as _requests
-from datetime import datetime, timedelta, date, timezone
-
-import pandas as pd
+from datetime import datetime
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import (
-    MarketOrderRequest,
-    LimitOrderRequest,
-    StopOrderRequest,
-    GetOrdersRequest,
-    GetAssetsRequest,
-)
-from alpaca.trading.enums import (
-    OrderSide, TimeInForce,
-    QueryOrderStatus, AssetClass, AssetStatus,
-)
+from alpaca.trading.requests import GetOrdersRequest
+from alpaca.trading.enums import QueryOrderStatus
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import (
-    StockBarsRequest,
-    StockLatestQuoteRequest,
-    StockSnapshotRequest,
-)
-from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 import config
-from core.database import log
 
 from core.broker_orders import OrdersMixin
 from core.broker_data import MarketDataMixin
 
 
 class AlpacaBroker(OrdersMixin, MarketDataMixin):
+    """Alpaca paper trading client plus historical data and market-data helpers."""
+
     _ALPACA_TIMEOUT = 30
     NEWS_CACHE_TTL_MIN = 15
 
     def __init__(self):
+        """Create trading and data REST clients and enforce HTTP timeouts on their sessions."""
         self._trade_client = TradingClient(config.ALPACA_KEY, config.ALPACA_SECRET, paper=True)
         self._data_client = StockHistoricalDataClient(config.ALPACA_KEY, config.ALPACA_SECRET)
 
@@ -53,37 +36,43 @@ class AlpacaBroker(OrdersMixin, MarketDataMixin):
         self._asset_cache_date: str = ""
         self._news_cache: dict[str, list] = {}
         self._news_cache_ts: datetime | None = None
-        self._news_stream: object | None = None  # NewsStream; set by bootstrap after start()
+        self._news_stream: object | None = None
 
     def get_account(self):
-        """Returns:
-            Alpaca account object (equity, cash, status).
+        """Fetch the live Alpaca account snapshot.
+
+        Returns:
+            Alpaca account object with equity, cash, and status fields.
         """
         return self._trade_client.get_account()
 
     def get_positions(self) -> dict:
-        """Returns:
-            Mapping symbol -> Alpaca position object.
+        """Return all open positions keyed by symbol.
+
+        Returns:
+            Dict mapping uppercase symbol strings to Alpaca position objects.
         """
         positions = self._trade_client.get_all_positions()
         return {p.symbol: p for p in positions}
 
     def get_open_orders(self) -> list:
-        """Returns:
-            List of open Alpaca order objects.
+        """Return every order currently open at the broker.
+
+        Returns:
+            List of Alpaca order objects with open status.
         """
         req = GetOrdersRequest(status=QueryOrderStatus.OPEN)
         return self._trade_client.get_orders(filter=req)
 
     def has_active_stop_order(self, symbol: str, open_orders: list) -> bool:
-        """True if any open sell order exists for symbol (including bracket legs).
+        """Return True if any open sell exists for the symbol, including bracket legs.
 
         Args:
-            symbol: Ticker.
-            open_orders: Result of get_open_orders.
+            symbol: Equity ticker to inspect.
+            open_orders: Iterable returned by get_open_orders.
 
         Returns:
-            Boolean.
+            True when a matching sell or sell leg is open, otherwise False.
         """
         def _is_sell(o) -> bool:
             sym  = str(getattr(o, "symbol", "")).upper()
@@ -99,8 +88,10 @@ class AlpacaBroker(OrdersMixin, MarketDataMixin):
         return False
 
     def is_market_open(self) -> bool:
-        """Returns:
-            True if the equities session is open (API clock, else ET heuristic).
+        """Ask Alpaca for the session clock, or fall back to a simple ET weekday heuristic.
+
+        Returns:
+            True when the regular session is considered open, otherwise False.
         """
         try:
             clock = self._trade_client.get_clock()

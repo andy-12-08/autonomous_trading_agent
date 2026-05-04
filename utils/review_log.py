@@ -32,7 +32,7 @@ class ReviewLog:
         Returns:
             None.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
 
         all_decisions = [dict(r) for r in conn.execute(
@@ -59,14 +59,14 @@ class ReviewLog:
         if by_setup:
             print(f"  {'Setup Type':28s}  {'E$/trade':>8}  {'WR':>5}  {'AvgW':>7}  {'AvgL':>7}  {'n':>4}  Status")
             print(f"  {self.SEP}")
-            for st, exp in sorted(by_setup.items(),
-                                   key=lambda x: x[1]["expectancy"], reverse=True):
-                sign = "+" if exp["is_positive"] else ""
-                flag = "✓" if exp["is_positive"] else "✗ SUPPRESS"
-                print(f"  {st[:28]:28s}  {sign}${exp['expectancy']:>6.2f}  "
-                      f"{exp['win_rate']:>4.0%}  "
-                      f"${exp['avg_win']:>5.0f}  ${exp['avg_loss']:>5.0f}  "
-                      f"{exp['total_trades']:>4}  {flag}")
+            for st, st_exp in sorted(by_setup.items(),
+                                      key=lambda x: x[1]["expectancy"], reverse=True):
+                sign = "+" if st_exp["is_positive"] else ""
+                flag = "✓" if st_exp["is_positive"] else "✗ SUPPRESS"
+                print(f"  {st[:28]:28s}  {sign}${st_exp['expectancy']:>6.2f}  "
+                      f"{st_exp['win_rate']:>4.0%}  "
+                      f"${st_exp['avg_win']:>5.0f}  ${st_exp['avg_loss']:>5.0f}  "
+                      f"{st_exp['total_trades']:>4}  {flag}")
         else:
             print("  Insufficient data per setup type (need ≥ 2 trades per type)")
 

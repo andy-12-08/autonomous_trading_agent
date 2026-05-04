@@ -1,38 +1,25 @@
-"""
-Session-level threshold overrides — set once by the morning study, active all day.
-
-The morning study analyses yesterday's missed opportunities and may propose small,
-evidence-based adjustments to screening thresholds. This module applies those
-values (clamped to safety bounds) and exposes them to the signal scorer and
-risk manager via get().
-
-Hard constraints (R:R < 2, RSI > 72, drawdown limit, circuit breaker) are
-NEVER adjustable — they are enforced in code regardless of what is set here.
-"""
 from core.database import log
 
 
 class SessionOverrides:
-    """Manages session-level threshold overrides applied once per trading day.
+    """Clamp morning-study threshold tweaks and expose them for one trading day.
 
-    The morning study may propose small, evidence-based adjustments to screening
-    thresholds. This class applies those values (clamped to safety bounds) and
-    exposes them to the signal scorer and risk manager via get().
+    Hard risk limits such as minimum reward-to-risk and drawdown caps stay in code;
+    only softer screening knobs are adjustable here.
 
     Attributes:
-        config: The config module containing default threshold values.
+        config: Config module that supplies default numeric thresholds.
     """
 
     def __init__(self, config_module):
-        """Initialize SessionOverrides with a config module.
+        """Load defaults from the config module and prepare safety bounds.
 
         Args:
-            config_module: The config module providing NORMAL_MIN_SIGNAL_SCORE,
-                MIDDAY_MIN_SIGNAL_SCORE, and MIN_VOL_RATIO_ENTRY constants.
+            config_module: Module exposing NORMAL_MIN_SIGNAL_SCORE, MIDDAY_MIN_SIGNAL_SCORE,
+                and MIN_VOL_RATIO_ENTRY among other constants.
         """
         self.config = config_module
 
-        # Safety bounds: (min_allowed, max_allowed)
         self._BOUNDS: dict[str, tuple[float, float]] = {
             "signal_score_min_normal": (5.5,  7.5),
             "signal_score_min_midday": (6.5,  8.5),
@@ -56,7 +43,7 @@ class SessionOverrides:
         then applies any plan-specified overrides clamped to safety bounds.
 
         Args:
-            plan: The daily plan dict, which may contain a 'threshold_overrides' key.
+            plan: Daily plan dict; optional threshold_overrides map may appear inside it.
 
         Returns:
             The active overrides dict after applying plan values.
@@ -97,9 +84,10 @@ class SessionOverrides:
         return self._active.get(key, self._DEFAULTS.get(key, 0.0))
 
     def reset(self):
-        """Reset all overrides to config defaults.
+        """Reset all overrides to config defaults (called on each new session day).
 
-        Called at the start of each trading day.
+        Returns:
+            None.
         """
         self._active = dict(self._DEFAULTS)
 

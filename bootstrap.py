@@ -27,13 +27,16 @@ from utils.backtester import Backtester
 
 
 def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Backtester]:
-    """Wire all services, build orchestrator + backtester, reset daily state.
+    """Construct broker, data clients, risk engines, orchestrator, and weekly backtester.
+
+    Starts the optional real-time news stream and attaches it to the broker. Calls
+    reset_daily_state on the orchestrator and enables dry-run mode when requested.
 
     Args:
-        dry_run: If True, enable orchestrator dry-run (no live orders).
+        dry_run: When True, the orchestrator logs decisions but does not place orders.
 
     Returns:
-        (orchestrator, backtester).
+        A tuple of the configured TradingOrchestrator and Backtester instances.
     """
     db = Database(config.DB_PATH)
     db.init_db()
@@ -88,7 +91,6 @@ def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Bac
         database=db,
     )
 
-    # Real-time news WebSocket — starts immediately, broker merges stream into REST results
     news_stream = NewsStream()
     news_stream.start()
     broker._news_stream = news_stream

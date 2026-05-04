@@ -17,7 +17,7 @@ from core.database import log
 
 
 class MarketDataMixin:
-    """Mixin providing bars, quotes, snapshots, and news data fetching."""
+    """Bars, quotes, snapshots, asset lists, fills, and news for AlpacaBroker."""
 
     def get_bars(self, symbol: str, timeframe: str = "5Min", days: int = 5) -> pd.DataFrame:
         """Fetch OHLCV bar data for a single symbol.
@@ -61,19 +61,16 @@ class MarketDataMixin:
 
     def get_bars_multi(self, symbols: list[str], timeframe: str = "5Min",
                        days: int = 5) -> dict[str, pd.DataFrame]:
-        """Fetch OHLCV bars for multiple symbols in a single API call.
-
-        Returns {symbol: DataFrame}. Symbols with no data are absent from the result.
-        Dramatically more efficient than calling get_bars() in a loop.
+        """Fetch OHLCV bars for many symbols in one API call (IEX feed).
 
         Args:
-            symbols: List of ticker symbols to fetch.
-            timeframe: Bar width — one of "1Min", "5Min", "15Min", "1Hour", "1Day".
-            days: Number of calendar days of history to request.
+            symbols: Ticker list; empty input returns an empty dict.
+            timeframe: Bar width such as 1Min, 5Min, 15Min, 1Hour, or 1Day.
+            days: Calendar days of history to request backward from now.
 
         Returns:
-            Dict mapping symbol to its OHLCV DataFrame. Symbols with no IEX
-            data are silently omitted.
+            Dict mapping each symbol with data to its sorted OHLCV DataFrame;
+            symbols without IEX data are omitted.
         """
         if not symbols:
             return {}
@@ -137,8 +134,8 @@ class MarketDataMixin:
             symbol: Ticker symbol to fetch a quote for.
 
         Returns:
-            Dict with keys {bid, ask, spread, spread_pct}, or None if the
-            quote is unavailable or fails the sanity check.
+            Dict with bid, ask, spread, and spread_pct keys, or None when the
+            quote is missing, invalid, or fails sanity checks.
         """
         try:
             req  = StockLatestQuoteRequest(symbol_or_symbols=symbol)
@@ -147,12 +144,10 @@ class MarketDataMixin:
             bid = float(quote.bid_price or 0)
             ask = float(quote.ask_price or 0)
             if bid <= 0 or ask <= 0 or ask < bid:
-                # Stale / incomplete quote — treat as unavailable so trade isn't blocked
                 return None
             mid = (bid + ask) / 2
             spread_pct = (ask - bid) / mid
             if spread_pct > 0.05:
-                # > 5% spread is a bad/pre-market quote — discard rather than veto a valid setup
                 log.warning("Discarding implausible quote for %s: bid=%.2f ask=%.2f spread=%.2f%%",
                             symbol, bid, ask, spread_pct * 100)
                 return None
@@ -163,19 +158,17 @@ class MarketDataMixin:
             return None
 
     def get_news_headlines(self, symbols: list[str], hours_back: int = 18) -> dict[str, list[dict]]:
-        """Fetch recent news headlines for a list of symbols via Alpaca's news API (Benzinga feed).
+        """Fetch recent headlines per symbol via Alpaca news (Benzinga), with REST caching.
 
-        Returns {symbol: [{headline, summary, created_at}]}.
-        Cached for NEWS_CACHE_TTL_MIN minutes — news doesn't change faster than that.
-        Symbols with no news are absent from the result (not an error).
+        When broker._news_stream is set, WebSocket articles are merged in so fresh
+        headlines appear without waiting for the next REST poll.
 
         Args:
-            symbols: List of ticker symbols to fetch headlines for.
-            hours_back: How many hours of news history to retrieve (default 18).
+            symbols: Tickers to request; absent keys mean no articles returned.
+            hours_back: Hours of history to include from the REST endpoint.
 
         Returns:
-            Dict mapping symbol to a list of article dicts, each containing
-            keys: headline, summary, created_at.
+            Dict mapping symbol to a list of dicts with headline, summary, and created_at.
         """
         if not symbols:
             return {}
@@ -227,9 +220,6 @@ class MarketDataMixin:
         self._news_cache    = result
         self._news_cache_ts = now
 
-        # Merge real-time WebSocket articles on top of REST results.
-        # Stream articles are prepended — breaking news appears immediately
-        # rather than waiting for the next 15-min REST poll cycle.
         stream = getattr(self, "_news_stream", None)
         if stream is not None:
             stream_news = stream.get_news(symbols, max_age_minutes=30)
@@ -282,18 +272,14 @@ class MarketDataMixin:
             return []
 
     def get_snapshots_bulk(self, symbols: list[str]) -> dict[str, dict]:
-        """Fetch price, today's volume, and % change for a large symbol list in one sweep.
-
-        Batches into groups of 500 to stay within URL limits.
-        Returns {symbol: {price, volume, dollar_volume, change_pct}}.
-        Symbols with no IEX data are absent from the result — graceful, not an error.
+        """Fetch price, volume, dollar volume, and percent change for many symbols (IEX).
 
         Args:
-            symbols: List of ticker symbols to snapshot.
+            symbols: Tickers to snapshot; large lists are processed in batches of 500.
 
         Returns:
-            Dict mapping symbol to a metrics dict with keys: price, volume,
-            dollar_volume, change_pct. Symbols missing IEX data are omitted.
+            Dict mapping symbol to price, volume, dollar_volume, and change_pct;
+            symbols without IEX snapshot data are omitted.
         """
         if not symbols:
             return {}

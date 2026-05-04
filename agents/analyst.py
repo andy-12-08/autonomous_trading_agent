@@ -1,6 +1,6 @@
 import json
 import pathlib
-from datetime import date, datetime
+from datetime import datetime
 import sqlite3
 
 import anthropic
@@ -10,20 +10,25 @@ from core.database import log
 
 from agents.study_data import StudyDataMixin
 
+
 class MarketAnalyst(StudyDataMixin):
+    """Morning study: gather context, call Claude, persist the daily plan JSON."""
+
     STUDY_SYSTEM_PROMPT = (
         pathlib.Path(__file__).parent.parent / "prompts" / "morning_study.md"
     ).read_text()
 
     def __init__(self, broker, indicators, pre_market_client, yield_curve_client,
                  short_interest_client, dynamic_watchlist):
-        """Args:
-            broker: Alpaca broker (bars, snapshots, news).
-            indicators: IndicatorEngine for studies.
-            pre_market_client: Pre-market levels client.
-            yield_curve_client: Macro yield client.
-            short_interest_client: Short interest client.
-            dynamic_watchlist: Persisted watchlist for news/carryover.
+        """Wire broker, indicators, and optional macro and watchlist clients.
+
+        Args:
+            broker: AlpacaBroker for prices, bars, and news.
+            indicators: IndicatorEngine for technical context in the study prompt.
+            pre_market_client: Pre-market range helper.
+            yield_curve_client: Yield curve data client.
+            short_interest_client: Short interest data client.
+            dynamic_watchlist: DynamicWatchlist persistence for carryover symbols.
         """
         self.broker           = broker
         self.indicators       = indicators
@@ -41,9 +46,12 @@ class MarketAnalyst(StudyDataMixin):
         """Persist plan to daily_plans for the plan's date (or today).
 
         Args:
-            plan: Daily plan dict (must include or default date).
+            plan: Daily plan dict; uses its date key or today when missing.
+
+        Returns:
+            None.
         """
-        conn = sqlite3.connect(config.DB_PATH)
+        conn = sqlite3.connect(config.DB_PATH, timeout=10)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS daily_plans (
                 date  TEXT PRIMARY KEY,
@@ -52,7 +60,7 @@ class MarketAnalyst(StudyDataMixin):
         """)
         conn.execute(
             "INSERT OR REPLACE INTO daily_plans (date, plan) VALUES (?,?)",
-            (plan.get("date", date.today().isoformat()), json.dumps(plan)),
+            (plan.get("date", datetime.now(config.ET).date().isoformat()), json.dumps(plan)),
         )
         conn.commit()
         conn.close()
@@ -63,7 +71,7 @@ class MarketAnalyst(StudyDataMixin):
         Returns:
             Plan dict, or None if missing.
         """
-        conn = sqlite3.connect(config.DB_PATH)
+        conn = sqlite3.connect(config.DB_PATH, timeout=10)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS daily_plans (
                 date TEXT PRIMARY KEY,
@@ -72,7 +80,7 @@ class MarketAnalyst(StudyDataMixin):
         """)
         row = conn.execute(
             "SELECT plan FROM daily_plans WHERE date=?",
-            (date.today().isoformat(),),
+            (datetime.now(config.ET).date().isoformat(),),
         ).fetchone()
         conn.commit()
         conn.close()
@@ -150,7 +158,7 @@ class MarketAnalyst(StudyDataMixin):
         elif macro_flag == "caution":
             macro_banner = "\n⚠️  MACRO CAUTION: Significant economic release today — be conservative.\n"
 
-        user_content = f"""## TODAY: {date.today().isoformat()}
+        user_content = f"""## TODAY: {datetime.now(config.ET).date().isoformat()}
 {macro_banner}
 ## ACCOUNT STATE
 {json.dumps(account, indent=2)}
@@ -247,7 +255,7 @@ Output the Daily Trading Plan JSON."""
         except json.JSONDecodeError as e:
             log.error("Study returned invalid JSON: %s | raw=%s", e, raw[:400])
             plan = {
-                "date":                        date.today().isoformat(),
+                "date":                        datetime.now(config.ET).date().isoformat(),
                 "market_bias":                 "unknown",
                 "risk_posture":                "conservative",
                 "macro_event_flag":            macro_flag,
@@ -267,7 +275,7 @@ Output the Daily Trading Plan JSON."""
         except Exception as e:
             log.error("Morning study failed: %s", e)
             plan = {
-                "date":               date.today().isoformat(),
+                "date":               datetime.now(config.ET).date().isoformat(),
                 "risk_posture":       "stand_aside",
                 "macro_event_flag":   macro_flag,
                 "market_bias":        "unknown",

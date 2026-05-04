@@ -1,3 +1,5 @@
+"""Central configuration: API keys from the environment, risk limits, and session times."""
+
 import os
 import pytz
 from dotenv import load_dotenv

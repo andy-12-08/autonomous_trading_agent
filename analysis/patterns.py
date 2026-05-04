@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from datetime import date as _date
+from datetime import date as _date, datetime as _datetime
 
 import config
 from core.database import log
@@ -392,7 +392,7 @@ class PatternsMixin:
             try:
                 dti      = pd.DatetimeIndex(df_5m.index)
                 idx_et   = dti.tz_convert(config.ET) if dti.tz else dti.tz_localize("UTC").tz_convert(config.ET)
-                today_et = _date.today()
+                today_et = _datetime.now(config.ET).date()
                 pm_mask  = [
                     (ts.date() == today_et)
                     and (4 <= ts.hour)

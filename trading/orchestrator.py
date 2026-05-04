@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import datetime
 import threading
 
 import config
@@ -10,6 +10,8 @@ from trading.trade_cycle import TradeCycleMixin
 
 
 class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycleMixin):
+    """Compose mixins for scanning, position management, execution, and the main scan cycle."""
+
     def __init__(
         self,
         broker,
@@ -35,6 +37,32 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         session_overrides,
         database,
     ):
+        """Wire broker, analytics, risk, data feeds, AI agents, persistence, and session state.
+
+        Args:
+            broker: AlpacaBroker for orders and market data.
+            indicators: IndicatorEngine for bar-derived signals.
+            risk_manager: RiskManager for sizing and approval rules.
+            bucket_manager: BucketManager for sector exposure.
+            gfv_tracker: GFVTracker for cash-account settlement tagging.
+            signal_scorer: SignalScorer for watchlist filtering.
+            expectancy_engine: ExpectancyEngine for Kelly and cooling rules.
+            options_flow: Client for optional flow data.
+            insider_flow: Client for insider transaction data.
+            dark_pool: Client for dark pool summaries.
+            pre_market: Pre-market level helper.
+            yield_curve: Yield curve client for macro sizing.
+            short_interest: Short interest client.
+            edgar: EDGAR filing gate client.
+            trading_agent: LLM decision client.
+            market_analyst: Morning study and plan persistence.
+            market_guard: Circuit breaker and regime helpers.
+            notifier: Email notifier.
+            screener: Universe builder.
+            dynamic_watchlist: Carry-forward watchlist store.
+            session_overrides: Study-driven threshold overrides.
+            database: Database handle for SQLite.
+        """
         self.broker            = broker
         self.indicators        = indicators
         self.risk_manager      = risk_manager
@@ -58,7 +86,6 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         self.session_overrides = session_overrides
         self.database          = database
 
-        # Per-day session state
         self._deployed_today:       float          = 0.0
         self._daily_pnl:            float          = 0.0
         self._trades_today:         int            = 0
@@ -71,35 +98,45 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         self._key_levels_cache:     dict           = {}
         self._eod_done:             bool           = False
         self._daily_pre_passed:     set            = set()
-        self._scan_active:          bool           = False
         self._force_run:            bool           = False
 
         self._state_lock  = threading.Lock()
-        self._broker_lock = threading.Lock()  # serialises broker-state writes between jobs
+        self._broker_lock = threading.Lock()
+        self._scan_lock   = threading.Lock()
 
         self._ET = config.ET
         self._SCAN_TIMEOUT_SECONDS = 480
 
     def set_force_run(self, flag: bool):
-        """Bypass all market-hours and timing gates so the pipeline runs at any time.
+        """Bypass market-hours and study gates so the pipeline can run at any time.
 
-        Intended for end-to-end testing outside market hours. Always combine with
-        set_dry_run(True) to avoid placing real orders.
+        Intended for testing; pair with set_dry_run(True) to avoid live orders.
+
+        Args:
+            flag: When True, force mode is enabled.
+
+        Returns:
+            None.
         """
         self._force_run = flag
         if flag:
             log.info("=== FORCE MODE: market-hours gates bypassed — pipeline will run immediately ===")
 
     def set_dry_run(self, flag: bool):
-        """Args:
-            flag: If True, run scans and log decisions but do not place orders.
+        """Enable or disable dry-run mode (no broker orders).
+
+        Args:
+            flag: When True, decisions are logged only.
+
+        Returns:
+            None.
         """
         self._dry_run = flag
         if flag:
             log.info("=== DRY-RUN MODE: market data and AI decisions will run, but NO real orders will be placed ===")
 
     def reset_daily_state(self):
-        """Clear session counters, daily plan, guards; intended for each trading day.
+        """Reset per-day counters, cached plan, and market-guard session state.
 
         Returns:
             None.
@@ -108,7 +145,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         self._daily_pnl            = 0.0
         self._trades_today         = 0
         self._traded_buckets_today = set()
-        self._session_date         = date.today().isoformat()
+        self._session_date         = datetime.now(self._ET).date().isoformat()
         self._daily_plan           = None
         self._study_complete       = False
         self._last_full_scan_ts    = None
@@ -121,12 +158,14 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         log.info("=== Daily state reset for %s ===", self._session_date)
 
     def is_in_study_window(self, hour: int, minute: int) -> bool:
-        """Args:
-            hour: Current hour in ET (0–23).
-            minute: Current minute (0–59).
+        """Return True when the clock lies inside the morning study window (ET).
+
+        Args:
+            hour: Hour of day in Eastern Time, 0 to 23.
+            minute: Minute of the hour, 0 to 59.
 
         Returns:
-            True if time is within the configured morning study window.
+            True inside the configured study window, otherwise False.
         """
         cur   = hour * 60 + minute
         start = config.STUDY_START_HOUR * 60 + config.STUDY_START_MIN
@@ -134,12 +173,14 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         return start <= cur < end
 
     def is_high_volume_window(self, hour: int, minute: int) -> bool:
-        """Args:
-            hour: ET hour.
-            minute: ET minute.
+        """Return True when the clock lies inside a configured high-volume window (ET).
+
+        Args:
+            hour: Hour of day in Eastern Time.
+            minute: Minute of the hour.
 
         Returns:
-            True if inside config.HIGH_VOLUME_WINDOWS.
+            True when the time falls in HIGH_VOLUME_WINDOWS, otherwise False.
         """
         cur = hour * 60 + minute
         for sh, sm, eh, em in config.HIGH_VOLUME_WINDOWS:
@@ -148,7 +189,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         return False
 
     def eod_close_all(self):
-        """Flatten all positions at EOD; dry-run only logs.
+        """Close every open position at end of day; dry-run logs only.
 
         Returns:
             None.
@@ -160,7 +201,8 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
                 log.info("  [DRY-RUN] Would close %s", sym)
             return
         log.info("EOD: closing all open positions")
-        positions = self.broker.get_positions()
+        positions  = self.broker.get_positions()
+        any_failed = False
         for symbol, pos in positions.items():
             gfv_safe, reason = self.gfv_tracker.gfv_safe_to_sell(symbol)
             if not gfv_safe:
@@ -171,6 +213,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             if not self.broker.close_position(symbol):
                 log.error("EOD: broker rejected close for %s — position left open, skipping DB cleanup",
                           symbol)
+                any_failed = True
                 continue
             self.database.remove_position(symbol)
             self.gfv_tracker.remove_buy(symbol)
@@ -180,15 +223,19 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
                             pnl=pnl, reasoning="EOD forced close — no overnight holds")
             self.database.update_outcome(symbol, "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven", pnl)
             log.info("EOD closed %s | qty=%.0f price=%.2f pnl=%+.2f", symbol, qty, current_price, pnl)
-        self.broker.cancel_all_orders()
+        if any_failed:
+            log.warning("EOD: one or more positions failed to close — skipping cancel_all_orders "
+                        "to preserve bracket stops on still-open positions")
+        else:
+            self.broker.cancel_all_orders()
 
     def write_daily_summary(self):
-        """Persist DB summary, save dynamic watchlist carryover, notify.
+        """Write daily_summary, persist the dynamic watchlist, and queue summary email.
 
         Returns:
             None.
         """
-        today     = date.today().isoformat()
+        today     = datetime.now(self._ET).date().isoformat()
         all_dec   = self.database.get_recent_decisions(200)
         today_dec = [d for d in all_dec if d["ts"].startswith(today)]
         trades    = sum(1 for d in today_dec if d["action"] in ("BUY", "SELL", "PARTIAL_SELL"))
@@ -196,11 +243,9 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         losses    = sum(1 for d in today_dec if (d.get("pnl") or 0) < 0)
         gross     = sum((d.get("pnl") or 0) for d in today_dec)
 
-        # Overall rolling expectancy
         exp_str  = self.expectancy_engine.expectancy_report(all_dec)
         exp_data = self.expectancy_engine.compute_expectancy(all_dec)
 
-        # Setup-type breakdown for learning loop
         setup_exp_str = self.expectancy_engine.setup_expectancy_report(all_dec)
 
         plan_note = ""
@@ -219,22 +264,24 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         log.info("    %s", exp_str)
         log.info("    %s", setup_exp_str)
 
-        # Persist pre-Claude survivors as tomorrow's dynamic watchlist
         self.dynamic_watchlist.save(list(self._daily_pre_passed))
 
-        # Send email notification
         self.notifier.send_daily_summary()
 
     def run_scan_and_trade(self):
-        """Run _scan_body in a daemon thread with a wall-clock timeout.
+        """Run _scan_body in a daemon thread with a wall-clock join timeout.
 
-        Skips the tick entirely if the previous scan is still alive — prevents
-        overlapping scans that would duplicate state mutations and heavy API work.
+        The scan lock is held for the entire lifetime of the worker thread — if the
+        thread hangs past the timeout, this method blocks until it finishes before
+        releasing the lock. This prevents a second scan from starting while the first
+        is still mutating shared state.
+
+        Returns:
+            None.
         """
-        if self._scan_active:
+        if not self._scan_lock.acquire(blocking=False):
             log.warning("Previous scan still running — skipping this 10-min tick")
             return
-        self._scan_active = True
         try:
             t = threading.Thread(target=self._scan_body, daemon=True, name="scan-body")
             t.start()
@@ -242,9 +289,10 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             if t.is_alive():
                 log.error(
                     "SCAN TIMEOUT after %ds — scan thread is stuck (hung API call?). "
-                    "Releasing scheduler lock so next 10-min cycle can start.",
+                    "Holding lock until thread finishes to prevent an overlapping scan.",
                     self._SCAN_TIMEOUT_SECONDS,
                 )
+                t.join()  # blocks here; lock stays held until the thread actually exits
         finally:
-            self._scan_active = False
+            self._scan_lock.release()
 

@@ -6,8 +6,8 @@ broker = AlpacaBroker()
 acct = broker.get_account()
 print(f"Account: equity={acct.equity} cash={acct.cash} status={acct.status}")
 
-cash = broker.get_settled_cash()
-print(f"Settled cash: ${cash:.2f}")
+raw_settled = float(getattr(acct, "non_marginable_buying_power", None) or acct.cash or 0)
+print(f"Settled cash: ${raw_settled:.2f}")
 
 open_pos = broker.get_positions()
 print(f"Open positions: {list(open_pos.keys()) or 'none'}")

@@ -6,11 +6,13 @@ from core.database import log
 
 
 class TradingAgent:
+    """Anthropic client that turns scan context JSON into trade decision rows."""
     SYSTEM_PROMPT = (
         pathlib.Path(__file__).parent.parent / "prompts" / "trading_agent.md"
     ).read_text()
 
     def __init__(self):
+        """Build the Anthropic client using API keys and retry settings from config."""
         self._client = anthropic.Anthropic(
             api_key=config.ANTHROPIC_API_KEY,
             timeout=120.0,
@@ -25,10 +27,20 @@ class TradingAgent:
         recent_decisions: list[dict],
         daily_plan: dict | None = None,
         bucket_report: dict | None = None,
-    ) -> list[dict]:
-        """Call the LLM with scan context and return parsed trade decisions.
+    ) -> list[dict] | None:
+        """Send watchlist, positions, account state, and history to Claude as JSON.
 
-        Returns empty list on failure — caller should invoke rule_based_fallback().
+        Args:
+            watchlist_data: Candidate dicts after mechanical screening.
+            open_positions: Snapshot rows for each live position.
+            account: Equity, cash, limits, and regime strings for the prompt.
+            recent_decisions: Prior DB rows for continuity (last 20 are embedded).
+            daily_plan: Morning study JSON, or None when unavailable.
+            bucket_report: Sector bucket exposure summary dict, or None.
+
+        Returns:
+            Parsed list of decision dicts (may be [] for intentional "no action"),
+            or None on JSON parse errors or transport failures (triggers fallback).
         """
         history_text = json.dumps(recent_decisions[-20:], indent=2) if recent_decisions else "[]"
         plan_text    = json.dumps(daily_plan, indent=2) if daily_plan else "NOT AVAILABLE — trade conservatively"
@@ -111,24 +123,24 @@ Return your JSON decision array now."""
 
         except json.JSONDecodeError as e:
             log.error("AI returned invalid JSON: %s | raw=%s", e, raw[:400])
-            return []
+            return None
         except Exception as e:
-            log.error("AI call failed after %d retries: %s", config.CLAUDE_MAX_RETRIES, e)
-            return []
+            log.error("AI call failed (%s): %s", type(e).__name__, e)
+            return None
 
     @staticmethod
     def rule_based_fallback(
         watchlist_data: list[dict],
         open_positions: list[dict],
     ) -> list[dict]:
-        """Generate decisions purely from signal scores when Claude is unavailable.
+        """Emit HOLD rows for open positions and BUY rows for top scores when LLM output is empty.
 
-        BUY:  score >= 7.5 (strong/high-conviction bands that have proven positive edge)
-        HOLD: any open position (mechanical stops handle exits)
-        SKIP: everything else
+        Args:
+            watchlist_data: Scored candidates after the pre-filter (symbol and signal_score required).
+            open_positions: Snapshot rows so every open symbol receives a HOLD decision.
 
-        This is a safety net — it should fire rarely and only when the Claude API
-        is completely unreachable after retries.
+        Returns:
+            A list of minimal decision dicts safe for execute_decisions in an outage.
         """
         decisions = []
 

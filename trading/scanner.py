@@ -4,6 +4,8 @@ from core.database import log
 
 
 class ScannerMixin:
+    """Build scored watchlist rows from cached bars and the signal scorer."""
+
     def build_watchlist_data(
         self,
         daily_plan: dict | None,
@@ -17,7 +19,7 @@ class ScannerMixin:
             daily_plan: Optional morning plan (e.g. top_candidates).
             midday: If True, applies stricter midday thresholds in the scorer.
             universe: Symbols to scan; defaults to config.WATCHLIST.
-            regime: Intaday regime label passed to the signal scorer.
+            regime: Intraday regime label passed to the signal scorer.
 
         Returns:
             List of candidate dicts that passed the signal filter, best score first.
@@ -117,7 +119,7 @@ class ScannerMixin:
         )
         log.info("Watchlist: %d/%d symbols passed signal filter (midday=%s)",
                  len(scored), len(raw), midday)
-        for item in scored[:6]:  # log top 6
+        for item in scored[:6]:
             b15  = item.get("bias_15min") or {}
             bday = item.get("bias_daily") or {}
             bull15  = sum([bool(b15.get("ema_bull")),  bool(b15.get("above_vwap")),  bool(b15.get("macd_bull"))])

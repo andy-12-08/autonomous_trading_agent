@@ -293,15 +293,13 @@ class SignalScorer(SignalRulesMixin):
         if session_overrides is not None:
             min_score = session_overrides.get("signal_score_min_midday") if midday else session_overrides.get("signal_score_min_normal")
         else:
-            import config
             min_score = config.MIDDAY_MIN_SIGNAL_SCORE if midday else config.NORMAL_MIN_SIGNAL_SCORE
 
         # Choppy regime: do NOT raise the threshold — choppy markets are where
         # mean-reversion and VWAP-reclaim setups thrive. The scorers already
         # penalise momentum/trend setups in choppy conditions. Claude gets the
         # regime context and applies its own discretion on position sizing.
-        import logging
-        logging.getLogger("bot").info(
+        log.info(
             "Signal filter: min_score=%.1f regime=%s %s",
             min_score, regime, "(midday)" if midday else "(high-vol)"
         )

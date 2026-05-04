@@ -3,6 +3,7 @@ from core.database import log
 
 
 class RiskManager:
+    """Static helpers to approve buys, size positions, and compute protective levels."""
     @staticmethod
     def approve_buy(symbol: str, price: float, qty: float, stop_loss: float,
                     settled_cash: float, deployed_today: float, num_positions: int,

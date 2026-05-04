@@ -9,7 +9,7 @@ Falls back to config.WATCHLIST when no saved list exists.
 """
 import json
 import os
-from datetime import date, timedelta
+from datetime import date, datetime
 
 import config
 from core.database import log
@@ -60,7 +60,7 @@ class DynamicWatchlist:
 
             # Reject lists older than 2 calendar days (weekend gap = 3 days; be lenient)
             if saved_date:
-                delta = (date.today() - date.fromisoformat(saved_date)).days
+                delta = (datetime.now(config.ET).date() - date.fromisoformat(saved_date)).days
                 if delta > 3:
                     log.info(
                         "Dynamic watchlist: saved list from %s is stale (%d days) — using config.WATCHLIST",
@@ -101,7 +101,7 @@ class DynamicWatchlist:
         merged = list(dict.fromkeys(survivors + list(config.WATCHLIST)))[: self._MAX_SYMBOLS]
 
         payload = {
-            "date":    date.today().isoformat(),
+            "date":    datetime.now(config.ET).date().isoformat(),
             "count":   len(merged),
             "symbols": merged,
         }

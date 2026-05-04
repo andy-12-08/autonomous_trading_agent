@@ -4,6 +4,8 @@ from core.database import log
 
 
 class OrdersMixin:
+    """Order placement helpers mixed into AlpacaBroker."""
+
     def cancel_all_orders(self) -> None:
         """Cancel every open order on the account.
 
@@ -13,11 +15,13 @@ class OrdersMixin:
         self._trade_client.cancel_orders()
 
     def close_position(self, symbol: str) -> bool:
-        """Args:
-            symbol: Position symbol to flatten.
+        """Flatten one position via the broker API.
+
+        Args:
+            symbol: Ticker to close.
 
         Returns:
-            True if the broker confirmed the close; False on any error.
+            True when the broker accepts the close; False on any error.
         """
         try:
             self._trade_client.close_position(symbol)
@@ -28,15 +32,15 @@ class OrdersMixin:
             return False
 
     def place_market_order(self, symbol: str, qty: float, side: str) -> object:
-        """Submit a day market order.
+        """Submit a day time-in-force market order.
 
         Args:
-            symbol: Ticker.
-            qty: Shares.
-            side: BUY or SELL.
+            symbol: Equity ticker.
+            qty: Share quantity (may be fractional depending on account).
+            side: BUY or SELL string.
 
         Returns:
-            Alpaca order object, or None on failure.
+            Alpaca order object on success, or None when submission fails.
         """
         order_side = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
         req = MarketOrderRequest(
@@ -56,17 +60,17 @@ class OrdersMixin:
     def place_bracket_order(self, symbol: str, qty: float, stop_loss: float,
                             take_profit: float,
                             limit_price: float | None = None) -> object:
-        """Submit a bracket BUY (market or limit entry) with SL/TP legs.
+        """Submit a bracket BUY with protective stop and take-profit legs.
 
         Args:
-            symbol: Ticker.
-            qty: Shares.
-            stop_loss: Protective stop price.
-            take_profit: Limit take-profit price.
-            limit_price: If set, limit entry; else market entry.
+            symbol: Equity ticker.
+            qty: Share quantity for the parent order.
+            stop_loss: Stop price for the protective sell leg.
+            take_profit: Limit price for the take-profit sell leg.
+            limit_price: When set, use a limit entry; otherwise use a market entry.
 
         Returns:
-            Alpaca order object, or None on failure.
+            Alpaca order object on success, or None on failure.
         """
         sl_leg = {"stop_price":  round(stop_loss,   2)}
         tp_leg = {"limit_price": round(take_profit,  2)}
@@ -106,14 +110,14 @@ class OrdersMixin:
             return None
 
     def update_stop_loss(self, symbol: str, new_stop: float):
-        """Cancel prior stop if present and submit a new stop-market sell.
+        """Cancel existing stop orders for the symbol, then submit a stop-market sell for full qty.
 
         Args:
-            symbol: Position symbol.
-            new_stop: New stop price.
+            symbol: Open position ticker.
+            new_stop: Desired stop trigger price.
 
         Returns:
-            Alpaca order object, or None if skipped/failed.
+            Alpaca order object on success, or None when skipped or failed.
         """
         orders = self.get_open_orders()
         for o in orders:

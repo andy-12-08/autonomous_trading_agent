@@ -1,46 +1,55 @@
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 import config
 from core.database import log
 
 
 def _next_bday(d: date) -> date:
-    """Next weekday after d.
+    """Return the next calendar date that is not a weekend.
+
+    Args:
+        d: Anchor calendar date.
 
     Returns:
-        A date that is not Saturday/Sunday.
+        The first upcoming Monday-through-Friday date after d.
     """
     d += timedelta(days=1)
-    while d.weekday() >= 5:   # 5=Sat 6=Sun
+    while d.weekday() >= 5:
         d += timedelta(days=1)
     return d
 
 
 class GFVTracker:
+    """Track which buys used unsettled proceeds so sells can avoid GFV issues."""
+
     def __init__(self, db_path: str):
-        """Args:
-            db_path: SQLite database path.
+        """Store the SQLite path used for GFV position rows.
+
+        Args:
+            db_path: Same database file as the main trading journal.
         """
         self.db_path = db_path
 
     def settlement_date_for_today(self) -> str:
-        """Returns:
-            ISO date string for the next business day (T+1 settlement anchor).
+        """Return the next weekday after today as an ISO date anchor for T+1 logic.
+
+        Returns:
+            ISO-formatted calendar date string for the upcoming settlement anchor.
         """
-        return _next_bday(date.today()).isoformat()
+        return _next_bday(datetime.now(config.ET).date()).isoformat()
 
     def init_gfv_db(self) -> None:
-        """Create gfv_positions if missing.
+        """Ensure the gfv_positions table exists.
 
         Returns:
             None.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS gfv_positions (
                 symbol             TEXT PRIMARY KEY,
-                funded_by_settled  INTEGER NOT NULL DEFAULT 1,  -- 1=settled, 0=unsettled
-                settlement_date    TEXT NOT NULL,               -- date proceeds settle
+                funded_by_settled  INTEGER NOT NULL DEFAULT 1,
+                settlement_date    TEXT NOT NULL,
                 entry_date         TEXT NOT NULL
             )
         """)
@@ -52,16 +61,25 @@ class GFVTracker:
 
         Args:
             symbol: Ticker that was purchased.
-            funded_by_settled: True if the buy was funded by settled cash,
-                False if funded by same-day unsettled proceeds.
+            funded_by_settled: True when the buy used fully settled cash, False otherwise.
+
+        Returns:
+            None.
         """
         settle = self.settlement_date_for_today()
-        conn   = sqlite3.connect(self.db_path)
+        conn   = sqlite3.connect(self.db_path, timeout=10)
         conn.execute(
-            """INSERT OR REPLACE INTO gfv_positions
-               (symbol, funded_by_settled, settlement_date, entry_date)
-               VALUES (?,?,?,?)""",
-            (symbol, int(funded_by_settled), settle, date.today().isoformat()),
+            """INSERT INTO gfv_positions (symbol, funded_by_settled, settlement_date, entry_date)
+               VALUES (?,?,?,?)
+               ON CONFLICT(symbol) DO UPDATE SET
+                   funded_by_settled = MIN(funded_by_settled, excluded.funded_by_settled),
+                   settlement_date   = CASE
+                       WHEN excluded.funded_by_settled = 0
+                            AND excluded.settlement_date > settlement_date
+                           THEN excluded.settlement_date
+                       ELSE settlement_date
+                   END""",
+            (symbol, int(funded_by_settled), settle, datetime.now(config.ET).date().isoformat()),
         )
         conn.commit()
         conn.close()
@@ -70,20 +88,29 @@ class GFVTracker:
                         symbol, settle)
 
     def remove_buy(self, symbol: str) -> None:
-        """Remove a symbol from GFV tracking (called after a position is fully closed)."""
-        conn = sqlite3.connect(self.db_path)
+        """Delete GFV metadata after a symbol is fully closed.
+
+        Args:
+            symbol: Ticker to remove from the tracking table.
+
+        Returns:
+            None.
+        """
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute("DELETE FROM gfv_positions WHERE symbol=?", (symbol,))
         conn.commit()
         conn.close()
 
     def is_gfv_locked(self, symbol: str) -> tuple[bool, str]:
-        """Check whether selling this symbol would create a Good Faith Violation.
+        """Check whether selling would violate good-faith rules for unsettled funding.
+
+        Args:
+            symbol: Ticker to inspect in SQLite.
 
         Returns:
-            Tuple of (locked: bool, reason: str). A position is locked if it was
-            funded by unsettled proceeds AND those proceeds have not yet settled.
+            Tuple of locked boolean and a human-readable explanation string.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT * FROM gfv_positions WHERE symbol=?", (symbol,)
@@ -97,14 +124,21 @@ class GFVTracker:
             return False, "funded by settled cash — no GFV risk"
 
         settle = date.fromisoformat(row["settlement_date"])
-        if date.today() >= settle:
+        if datetime.now(config.ET).date() >= settle:
             return False, f"proceeds settled on {settle}"
 
         return True, (f"GFV-LOCK: funded by same-day unsettled proceeds; "
                       f"cannot sell until {settle}")
 
     def gfv_safe_to_sell(self, symbol: str) -> tuple[bool, str]:
-        """Return (True, reason) if it is safe to sell this symbol without a GFV."""
+        """Return whether a sell is GFV-safe plus the underlying explanation string.
+
+        Args:
+            symbol: Ticker to evaluate.
+
+        Returns:
+            Tuple where the first value is True when selling is allowed, False when locked.
+        """
         locked, reason = self.is_gfv_locked(symbol)
         return not locked, reason
 

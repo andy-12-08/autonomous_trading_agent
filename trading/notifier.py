@@ -3,18 +3,22 @@ import sqlite3
 import json
 import threading
 from email.mime.text import MIMEText
-from datetime import date, datetime
+from datetime import datetime
 
 import config
 from core.database import log
 
 
 class Notifier:
+    """Format and send daily summaries and per-trade SMTP alerts in background threads."""
+
     def __init__(self, config_module, db_path: str, expectancy_engine):
-        """Args:
-            config_module: Module with SMTP_*, RECIPIENT_EMAIL, LOG_FILE.
-            db_path: Path to SQLite journal.
-            expectancy_engine: ExpectancyEngine for summary stats.
+        """Store config, database path, and expectancy helper used in email bodies.
+
+        Args:
+            config_module: Module providing SMTP_HOST, SMTP_USER, RECIPIENT_EMAIL, LOG_FILE, etc.
+            db_path: SQLite path for loading decisions and summaries.
+            expectancy_engine: ExpectancyEngine instance for rollups in the daily email.
         """
         self.config     = config_module
         self.db_path    = db_path
@@ -26,8 +30,8 @@ class Notifier:
         Returns:
             Keys: today, today_decisions, all_decisions, summary, plan, open_positions.
         """
-        today = date.today().isoformat()
-        conn  = sqlite3.connect(self.db_path)
+        today = datetime.now(config.ET).date().isoformat()
+        conn  = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
 
         today_decisions = [dict(r) for r in conn.execute(
@@ -119,7 +123,6 @@ class Notifier:
                 "",
             ]
 
-        # All-time expectancy
         if overall_exp:
             sign   = "+" if overall_exp["is_positive"] else ""
             status = "POSITIVE EDGE ✓" if overall_exp["is_positive"] else "NEGATIVE EDGE ✗ — REVIEW STRATEGY"
@@ -136,7 +139,6 @@ class Notifier:
                 "",
             ]
 
-        # Setup-type breakdown
         if by_setup:
             lines += [sep, "  SETUP-TYPE EXPECTANCY (all-time)", sep]
             for st, exp in sorted(by_setup.items(),
@@ -150,7 +152,6 @@ class Notifier:
                 )
             lines.append("")
 
-        # Lessons & warnings from daily plan
         if p.get("history_lessons"):
             lines += [sep, "  HISTORY LESSONS APPLIED TODAY", sep]
             for lesson in p["history_lessons"]:
@@ -163,7 +164,6 @@ class Notifier:
                 lines.append(f"  ⚠ {w}")
             lines.append("")
 
-        # Trade-by-trade log (today only)
         executed = [d for d in dec if d.get("action") in ("BUY", "SELL", "PARTIAL_SELL")]
         if executed:
             lines += [sep, "  TODAY'S TRADE LOG", sep]
@@ -176,7 +176,6 @@ class Notifier:
                 )
             lines.append("")
 
-        # Claude confidence drift audit
         drift = self.expectancy.get_claude_confidence_drift()
         if drift:
             lines += [
