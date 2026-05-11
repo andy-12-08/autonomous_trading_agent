@@ -6,7 +6,7 @@ from core.database import log
 
 
 class TradeCycleMixin:
-    """One full scan-and-trade cycle: macro context, universe, AI, and execution."""
+    """One full scan-and-trade cycle: macro context, universe, algo decisions, and execution."""
 
     def _gather_macro_factors(self, account_ctx: dict) -> tuple[float, str]:
         """Populate account_ctx with VIX, yield curve, structure, and intraday regime.
@@ -175,7 +175,7 @@ class TradeCycleMixin:
         self, watchlist_data: list[dict], positions_snapshot: list[dict],
         cooling_symbols: dict, sector_str: dict,
     ) -> tuple[list[dict], list[tuple[str, str]]]:
-        """Mechanically veto candidates before Claude sees them.
+        """Mechanically veto candidates before the algo engine evaluates them.
 
         Args:
             watchlist_data: Scored rows entering the AI stage.
@@ -226,7 +226,7 @@ class TradeCycleMixin:
             pre_passed.append(item)
 
         if pre_vetoed:
-            log.info("Pre-Claude filter: %d vetoed, %d sent to AI | vetoed: %s",
+            log.info("Pre-filter: %d vetoed, %d passed | vetoed: %s",
                      len(pre_vetoed), len(pre_passed),
                      ", ".join(f"{s}({r.split(':')[0]})" for s, r in pre_vetoed[:8]))
 
@@ -447,7 +447,7 @@ class TradeCycleMixin:
         }
 
         if not watchlist_data and not positions_snapshot:
-            log.info("No candidates and no open positions — skipping AI call this scan")
+            log.info("No candidates and no open positions — skipping algo call this scan")
             return
 
         pre_passed, _ = self._pre_filter_candidates(
@@ -456,24 +456,8 @@ class TradeCycleMixin:
         with self._state_lock:
             self._daily_pre_passed.update(item["symbol"] for item in pre_passed)
 
-        ai_candidates = pre_passed[:20]
-        if len(pre_passed) > 20:
-            log.info("Trimmed candidates: %d → 20 for AI prompt", len(pre_passed))
-
-        decisions = self.trading_agent.ask_agent(
-            ai_candidates, positions_snapshot, account_ctx,
-            self.database.get_recent_decisions(30), self._daily_plan, bucket_report)
-
-        _used_fallback = False
-        if decisions is None and (ai_candidates or positions_snapshot):
-            log.warning("Claude returned no decisions (parse/transport failure) — activating rule-based fallback")
-            decisions      = self.trading_agent.rule_based_fallback(ai_candidates, positions_snapshot)
-            _used_fallback = True
-        elif decisions is not None and len(decisions) == 0:
-            log.info("Claude returned empty decision array — no action this cycle (intentional)")
-
-        decisions = decisions or []
-        log.info("Decisions: %d (%s)", len(decisions), "FALLBACK" if _used_fallback else "AI")
+        decisions = self.algo_engine.make_decisions(pre_passed, positions_snapshot)
+        log.info("Decisions: %d (ALGO)", len(decisions))
 
         kelly = self.expectancy_engine.compute_kelly_factor(recent_decisions)
         if kelly != 1.0:

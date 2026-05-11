@@ -1,5 +1,5 @@
-from agents.agent import TradingAgent
-from agents.analyst import MarketAnalyst
+from agents.algo_decisions import AlgoDecisionEngine
+from agents.algo_analyst import AlgoMarketAnalyst
 from agents.dynamic_watchlist import DynamicWatchlist
 
-__all__ = ["TradingAgent", "MarketAnalyst", "DynamicWatchlist"]
+__all__ = ["AlgoDecisionEngine", "AlgoMarketAnalyst", "DynamicWatchlist"]

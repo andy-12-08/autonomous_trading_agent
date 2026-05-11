@@ -176,16 +176,16 @@ class Notifier:
                 )
             lines.append("")
 
-        drift = self.expectancy.get_claude_confidence_drift()
+        drift = self.expectancy.get_confidence_drift()
         if drift:
             lines += [
                 sep,
-                "  ⚠  CLAUDE CONFIDENCE DRIFT DETECTED",
+                "  ⚠  CONFIDENCE DRIFT DETECTED",
                 sep,
                 f"  Recent avg  : {drift['recent_avg']}/10  (last 7 days, n={drift['recent_n']})",
                 f"  Baseline    : {drift['baseline_avg']}/10  (90-day avg, n={drift['baseline_n']})",
                 f"  Drift       : {drift['drift']:+.1f} pts  ({drift['direction']})",
-                f"  Action      : Review bot.log and recent AI reasoning for prompt drift.",
+                f"  Action      : Review bot.log and recent decisions for confidence drift.",
                 "",
             ]
 

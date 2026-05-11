@@ -1,7 +1,7 @@
 import config
-from agents.agent import TradingAgent
+from agents.algo_decisions import AlgoDecisionEngine
 from data.news_stream import NewsStream
-from agents.analyst import MarketAnalyst
+from agents.algo_analyst import AlgoMarketAnalyst
 from agents.dynamic_watchlist import DynamicWatchlist
 from analysis.indicators import IndicatorEngine
 from analysis.market_guard import MarketGuard
@@ -57,11 +57,11 @@ def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Bac
     signal_scorer = SignalScorer()
     screener = Screener(broker)
     market_guard = MarketGuard(broker, indicators)
-    trading_agent = TradingAgent()
+    algo_engine = AlgoDecisionEngine()
     dynamic_watchlist = DynamicWatchlist()
     session_overrides = SessionOverrides(config)
     notifier = Notifier(config, config.DB_PATH, expectancy_engine)
-    market_analyst = MarketAnalyst(
+    market_analyst = AlgoMarketAnalyst(
         broker, indicators, pre_market, yield_curve, short_interest, dynamic_watchlist
     )
     backtester = Backtester(broker, indicators, signal_scorer)
@@ -81,7 +81,7 @@ def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Bac
         yield_curve=yield_curve,
         short_interest=short_interest,
         edgar=edgar,
-        trading_agent=trading_agent,
+        algo_engine=algo_engine,
         market_analyst=market_analyst,
         market_guard=market_guard,
         notifier=notifier,

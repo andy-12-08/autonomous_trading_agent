@@ -14,9 +14,6 @@ ALPACA_KEY    = os.getenv("ALPACA_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET")
 ALPACA_BASE_URL = os.getenv("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets")
 
-# Anthropic
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CLAUDE_MODEL      = "claude-sonnet-4-6"
 
 # Account
 ACCOUNT_SIZE = 10_000.0
@@ -68,8 +65,6 @@ INTRADAY_PNL_TIERS = [
     (-0.010, 0.70),   # -1.0%+ drawdown: size ×0.70 — early warning, dial back aggression
 ]
 
-# Claude API retry — Anthropic SDK handles exponential backoff automatically
-CLAUDE_MAX_RETRIES = 3
 
 # Quality filters
 MIN_REWARD_TO_RISK    = 2.0         # minimum 2:1 R:R — cut losses fast, let winners run
@@ -173,14 +168,14 @@ MARKET_CLOSE_MIN        = 45   # last entry window closes at 3:45
 PRIME_ENTRY_END_HOUR    = 10
 PRIME_ENTRY_END_MIN     = 15
 MIDDAY_ENTRY_MIN_SCORE  = 9.0  # signal score required outside prime window
-MIDDAY_ENTRY_MIN_CONF   = 8    # Claude confidence required outside prime window
+MIDDAY_ENTRY_MIN_CONF   = 8    # signal confidence required outside prime window
 
 # Scheduler fires every SCAN_INTERVAL_MINUTES throughout the day.
 # During high-volume windows (9:35–11:00 and 2:30–3:45) every cycle runs a full scan.
 # During midday, the full market scan is throttled to MIDDAY_SCAN_INTERVAL_MINUTES
-# to avoid burning Claude API budget on slow hours; position management still runs every 5 min.
+# to reduce API calls during slow hours; position management still runs every 5 min.
 SCAN_INTERVAL_MINUTES        = 10   # scheduler base cadence (every 10 min all day)
-MIDDAY_SCAN_INTERVAL_MINUTES = 20   # full AI scan every 20 min during midday low-volume period
+MIDDAY_SCAN_INTERVAL_MINUTES = 20   # full scan every 20 min during midday low-volume period
 
 # Dynamic universe screener
 # Each cycle: fetch top movers + most-actives from Alpaca, merge with WATCHLIST.
@@ -227,8 +222,8 @@ VOL_REGIME_THRESHOLDS = [
 MAX_TRADEABLE_ATR_PCT = 0.05   # 5% ATR/price is the absolute cap
 
 # Signal quality gate
-# Items below this score are dropped before the AI even sees them
-MIN_SIGNAL_SCORE_TO_AI = 5.0   # must match per-mode bars — 5.0–5.9 items waste API calls
+# Items below this score are dropped before the algo engine evaluates them
+MIN_SIGNAL_SCORE_TO_AI = 5.0   # must match per-mode bars — 5.0–5.9 items add no value
 
 # VIX regime-aware sizing
 # SPY 10-day realized volatility (annualized %) is used as a market fear proxy.
@@ -247,9 +242,9 @@ VIX_REGIME_THRESHOLDS: list[tuple[float, float, str]] = [
 SYMBOL_COOLING_LOOKBACK     = 10    # min closed trades before cooling activates
 SYMBOL_COOLING_MIN_WIN_RATE = 0.25  # cool if recent WR < 25%
 
-# Claude output audit
+# Confidence drift audit
 # Flag in daily email if 7-day avg confidence deviates > N pts from 90-day avg.
-CLAUDE_AUDIT_DRIFT_THRESHOLD = 2.0
+CONFIDENCE_DRIFT_THRESHOLD = 2.0
 
 # Consecutive-loss guard
 MAX_CONSECUTIVE_LOSSES_NORMAL  = 2   # after 2 losses: raise confidence bar

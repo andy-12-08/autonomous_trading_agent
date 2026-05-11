@@ -28,7 +28,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         yield_curve,
         short_interest,
         edgar,
-        trading_agent,
+        algo_engine,
         market_analyst,
         market_guard,
         notifier,
@@ -37,7 +37,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         session_overrides,
         database,
     ):
-        """Wire broker, analytics, risk, data feeds, AI agents, persistence, and session state.
+        """Wire broker, analytics, risk, data feeds, algo engines, persistence, and session state.
 
         Args:
             broker: AlpacaBroker for orders and market data.
@@ -54,7 +54,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             yield_curve: Yield curve client for macro sizing.
             short_interest: Short interest client.
             edgar: EDGAR filing gate client.
-            trading_agent: LLM decision client.
+            algo_engine: Algorithmic decision engine.
             market_analyst: Morning study and plan persistence.
             market_guard: Circuit breaker and regime helpers.
             notifier: Email notifier.
@@ -77,7 +77,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         self.yield_curve       = yield_curve
         self.short_interest    = short_interest
         self.edgar             = edgar
-        self.trading_agent     = trading_agent
+        self.algo_engine       = algo_engine
         self.market_analyst    = market_analyst
         self.market_guard      = market_guard
         self.notifier          = notifier
@@ -135,7 +135,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         """
         self._dry_run = flag
         if flag:
-            log.info("=== DRY-RUN MODE: market data and AI decisions will run, but NO real orders will be placed ===")
+            log.info("=== DRY-RUN MODE: market data and algo decisions will run, but NO real orders will be placed ===")
 
     def reset_daily_state(self):
         """Reset per-day counters, cached plan, and market-guard session state.

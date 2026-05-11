@@ -161,16 +161,6 @@ check("yfinance ^TNX (10Y yield)",
 check("yfinance HYG 2d bars",
       lambda: yf.download("HYG", period="2d", interval="1d", progress=False).empty is False)
 
-# Anthropic API
-import anthropic
-check("Anthropic API — ping (tiny completion)",
-      lambda: anthropic.Anthropic(
-          api_key=config.ANTHROPIC_API_KEY).messages.create(
-          model=config.CLAUDE_MODEL,
-          max_tokens=10,
-          messages=[{"role":"user","content":"say hi"}]
-      ).content[0].text != "")
-
 # ─────────────────────────────────────────────────────────────
 # 3. RISK MANAGER
 # ─────────────────────────────────────────────────────────────

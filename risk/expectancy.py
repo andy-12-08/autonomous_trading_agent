@@ -319,10 +319,10 @@ class ExpectancyEngine:
 
         return round(max(0.25, min(factor, 1.5)), 3)
 
-    def get_claude_confidence_drift(self) -> dict | None:
-        """Compare Claude's 7-day rolling avg confidence to the 90-day baseline.
+    def get_confidence_drift(self) -> dict | None:
+        """Compare 7-day rolling avg confidence to the 90-day baseline.
 
-        Returns a drift report dict if deviation > CLAUDE_AUDIT_DRIFT_THRESHOLD,
+        Returns a drift report dict if deviation > CONFIDENCE_DRIFT_THRESHOLD,
         otherwise None (healthy). Requires at least 10 BUY decisions with
         confidence recorded.
         """
@@ -351,7 +351,7 @@ class ExpectancyEngine:
         baseline_avg = sum(baseline) / len(baseline)
         drift        = recent_avg - baseline_avg
 
-        if abs(drift) < config.CLAUDE_AUDIT_DRIFT_THRESHOLD:
+        if abs(drift) < config.CONFIDENCE_DRIFT_THRESHOLD:
             return None
 
         return {

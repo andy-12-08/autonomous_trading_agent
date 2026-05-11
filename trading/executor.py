@@ -31,7 +31,7 @@ def _conviction_cap(signal_score: float, deployed_today: float) -> float:
 
 
 class ExecutorMixin:
-    """Apply AI decisions through risk checks and Alpaca order helpers."""
+    """Apply algo decisions through risk checks and Alpaca order helpers."""
 
     def _handle_buy(
         self, d: dict, symbol: str, _ss, full_reason: str, reason_entry: str,
@@ -155,7 +155,7 @@ class ExecutorMixin:
             price, atr, key_levels=self._key_levels_cache.get(symbol))
         if rm_sl and rm_tp:
             if stop_loss and take_profit:
-                log.debug("Overriding Claude SL=%.2f/TP=%.2f with rm SL=%.2f/TP=%.2f",
+                log.debug("Overriding decision SL=%.2f/TP=%.2f with risk-manager SL=%.2f/TP=%.2f",
                           stop_loss, take_profit, rm_sl, rm_tp)
             stop_loss, take_profit = rm_sl, rm_tp
         elif not stop_loss or not take_profit:
@@ -464,7 +464,7 @@ class ExecutorMixin:
         Returns:
             None.
         """
-        log.info("[DRY-RUN] AI returned %d decisions — no orders will be placed:", len(decisions))
+        log.info("[DRY-RUN] Algo returned %d decisions — no orders will be placed:", len(decisions))
         for d in decisions:
             sym    = (d.get("symbol") or "?").upper()
             action = (d.get("action") or "SKIP").upper()
@@ -534,7 +534,7 @@ class ExecutorMixin:
         """Dispatch BUY, SELL, PARTIAL_SELL, UPDATE_STOP, and SKIP/HOLD rows to handlers.
 
         Args:
-            decisions: Parsed list of dicts from Claude or the rule-based fallback.
+            decisions: Parsed list of dicts from the algo decision engine.
             positions_snapshot: Output of build_positions_snapshot at scan time.
             settled_cash: Settled buying power snapshot; decremented locally on fills.
             equity: Account equity snapshot.
