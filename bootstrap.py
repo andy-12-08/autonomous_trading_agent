@@ -1,5 +1,6 @@
 import config
 from agents.algo_decisions import AlgoDecisionEngine
+from data.float_cache import FloatCache
 from data.news_stream import NewsStream
 from agents.algo_analyst import AlgoMarketAnalyst
 from agents.dynamic_watchlist import DynamicWatchlist
@@ -59,6 +60,7 @@ def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Bac
     market_guard = MarketGuard(broker, indicators)
     algo_engine = AlgoDecisionEngine()
     dynamic_watchlist = DynamicWatchlist()
+    float_cache = FloatCache()
     session_overrides = SessionOverrides(config)
     notifier = Notifier(config, config.DB_PATH, expectancy_engine)
     market_analyst = AlgoMarketAnalyst(
@@ -87,9 +89,13 @@ def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Bac
         notifier=notifier,
         screener=screener,
         dynamic_watchlist=dynamic_watchlist,
+        float_cache=float_cache,
         session_overrides=session_overrides,
         database=db,
     )
+
+    # Pre-warm float cache for the full watchlist (avoids first-scan slowness)
+    float_cache.prefetch_floats(config.WATCHLIST, max_workers=8)
 
     news_stream = NewsStream()
     news_stream.start()

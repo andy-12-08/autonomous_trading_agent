@@ -342,8 +342,8 @@ def _enrichment_gate(item: dict, score: float) -> tuple[bool, str]:
     if opts and isinstance(opts, dict):
         put_call     = float(opts.get("put_call_ratio", 1.0))
         unusual_puts = bool(opts.get("unusual_puts"))
-        has_catalyst = bool(item.get("has_catalyst"))
-        if put_call > 2.0 and unusual_puts and not has_catalyst and score < 8.0:
+        catalyst_score = int(item.get("catalyst_score", 1 if item.get("has_catalyst") else 0))
+        if put_call > 2.0 and unusual_puts and catalyst_score < 2 and score < 8.0:
             return True, (
                 f"Options flow bearish (P/C {put_call:.1f}x, unusual puts, no catalyst) — "
                 "smart money positioned short"

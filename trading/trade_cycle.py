@@ -5,6 +5,63 @@ import config
 from core.database import log
 
 
+# ── Catalyst quality keywords ───────────────────────────────────────────────
+# Score: 3 = major binary event, 2 = significant, 1 = notable, -1 = negative
+_CAT_HIGH = [
+    "fda approv", "fda clearance", "breakthrough therapy", "acquisition", "merger",
+    "buyout", "takeover", "earnings beat", "revenue beat", "record revenue",
+    "raised guidance", "raised full-year", "raised outlook",
+]
+_CAT_MED = [
+    "upgrade", "raised price target", "partnership", "collaboration", "contract",
+    "wins contract", "new product", "regulatory approval", "phase 3",
+    "positive data", "clinical trial", "license agreement",
+]
+_CAT_NEG = [
+    "fda reject", "fda refusal", "recall", "class action", "lawsuit",
+    "sec investigation", "downgrade", "missed", "guidance cut",
+    "lowered guidance", "below expectations", "loss widened",
+]
+
+
+def _score_catalyst(headlines: list[str]) -> tuple[int, str]:
+    """Score a list of news headlines for catalyst quality.
+
+    Returns (score, reason_string):
+      score = 3  major binary event (FDA approval, M&A, big earnings beat)
+      score = 2  significant catalyst (upgrade, partnership, phase 3 data)
+      score = 1  notable news present but not a clear catalyst
+      score = -1 negative catalyst (reject, lawsuit, downgrade)
+      score = 0  no recognisable catalyst
+    reason_string is the matching keyword for logging.
+
+    Args:
+        headlines: List of raw headline strings.
+
+    Returns:
+        Tuple of (integer score, matching keyword string).
+    """
+    best_score  = 0
+    best_reason = ""
+    for headline in headlines:
+        h = headline.lower()
+        for kw in _CAT_NEG:
+            if kw in h:
+                return -1, kw
+        for kw in _CAT_HIGH:
+            if kw in h and best_score < 3:
+                best_score  = 3
+                best_reason = kw
+        for kw in _CAT_MED:
+            if kw in h and best_score < 2:
+                best_score  = 2
+                best_reason = kw
+    if best_score == 0 and headlines:
+        best_score  = 1
+        best_reason = "news present"
+    return best_score, best_reason
+
+
 class TradeCycleMixin:
     """One full scan-and-trade cycle: macro context, universe, algo decisions, and execution."""
 
@@ -134,10 +191,18 @@ class TradeCycleMixin:
             for item in watchlist_data:
                 headlines = news_data.get(item["symbol"])
                 if headlines:
-                    item["has_catalyst"]   = True
-                    item["news_headlines"] = [h["headline"] for h in headlines[:3]]
-            log.info("News attached: %d/%d candidates have headlines",
-                     sum(1 for i in watchlist_data if i.get("has_catalyst")), len(watchlist_data))
+                    raw_texts = [h["headline"] for h in headlines[:5]]
+                    cat_score, cat_reason = _score_catalyst(raw_texts)
+                    item["has_catalyst"]    = cat_score > 0
+                    item["catalyst_score"]  = cat_score
+                    item["catalyst_reason"] = cat_reason
+                    item["news_headlines"]  = raw_texts[:3]
+            log.info(
+                "News attached: %d/%d candidates | scored: %s",
+                sum(1 for i in watchlist_data if i.get("has_catalyst")),
+                len(watchlist_data),
+                [(i["symbol"], i.get("catalyst_score", 0)) for i in watchlist_data if i.get("has_catalyst")][:5],
+            )
 
         for item in watchlist_data:
             sym = item["symbol"]
@@ -370,13 +435,23 @@ class TradeCycleMixin:
         if midday:
             log.info("MIDDAY scan: threshold=%.1f", config.MIDDAY_MIN_SIGNAL_SCORE)
 
-        cur_min = hour * 60 + minute
-        if 11 * 60 + 30 <= cur_min < 14 * 60:
-            if self._last_full_scan_ts is not None:
-                elapsed = (now - self._last_full_scan_ts).total_seconds()
+        cur_min  = hour * 60 + minute
+        open_min = 9 * 60 + 30   # 9:30 AM
+        open_end = 10 * 60        # 10:00 AM
+
+        if self._last_full_scan_ts is not None:
+            elapsed = (now - self._last_full_scan_ts).total_seconds()
+            if open_min <= cur_min < open_end:
+                pass  # Opening 30 min: scan every 5-min tick — no throttle
+            elif open_end <= cur_min < 11 * 60 + 30:
+                if elapsed < 600:
+                    log.info("Mid-morning throttle: last scan %.0fs ago — skipping (10-min interval)", elapsed)
+                    return
+            elif 11 * 60 + 30 <= cur_min < 14 * 60:
                 if elapsed < 720:
                     log.info("Midday throttle: last scan %.0fs ago — skipping (12-min interval)", elapsed)
                     return
+            # Power hour 14:00–15:45: scan every 5-min tick — no throttle
 
         cb_ok, cb_reason = self.market_guard.check_circuit_breaker()
         account_ctx["circuit_breaker"] = cb_reason if not cb_ok else "OK"

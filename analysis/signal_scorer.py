@@ -84,15 +84,22 @@ class SignalScorer(SignalRulesMixin):
         if 0.3 <= mom10 <= 4.0:
             score += 0.5; ev.append(f"+0.5 10-bar momentum {mom10:.1f}%")
 
-        # ── VOLUME (2.0 pts) ───────────────────────────────────────────────────────
-        if vol_ratio >= 2.0:
-            score += 2.0; ev.append(f"+2.0 surge volume {vol_ratio:.1f}x")
-        elif vol_ratio >= 1.5:
-            score += 1.5; ev.append(f"+1.5 strong volume {vol_ratio:.1f}x")
-        elif vol_ratio >= 1.2:
-            score += 0.8; ev.append(f"+0.8 above-avg volume {vol_ratio:.1f}x")
-        elif vol_ratio >= 1.0:
-            score += 0.3; ev.append(f"+0.3 avg volume {vol_ratio:.1f}x")
+        # ── VOLUME / RVOL (2.0 pts) ────────────────────────────────────────────────
+        # Prefer rvol (daily-bar-based) when available; fall back to vol_ratio.
+        rvol = float(sig.get("rvol") or sig.get("vol_ratio") or 1.0)
+        if rvol >= 3.0:
+            score += 2.0; ev.append(f"+2.0 RVOL surge {rvol:.1f}x avg daily volume")
+        elif rvol >= 2.0:
+            score += 1.5; ev.append(f"+1.5 RVOL elevated {rvol:.1f}x")
+        elif rvol >= 1.3:
+            score += 0.8; ev.append(f"+0.8 RVOL above average {rvol:.1f}x")
+        elif rvol >= 1.0:
+            score += 0.3; ev.append(f"+0.3 RVOL on pace {rvol:.1f}x")
+
+        # Float-tier bonus: low-float + surge volume = explosive move potential
+        float_tier = sig.get("float_tier", "unknown")
+        if float_tier in ("micro", "small") and rvol >= 2.0:
+            score += 0.5; ev.append(f"+0.5 low-float ({float_tier}) + surge RVOL — momentum amplifier")
 
         # ── ATR / VOLATILITY (1.5 pts) ─────────────────────────────────────────────
         # Ideal range: 0.5%–2.0% ATR/price — enough movement but not chaos
@@ -216,10 +223,10 @@ class SignalScorer(SignalRulesMixin):
             score -= 1.0; ev.append(f"-1.0 RSI getting hot {rsi:.0f}")
         if rsi < 30:
             score -= 1.5; ev.append(f"-1.5 RSI deeply oversold {rsi:.0f}")
-        if vol_ratio < 0.7:
-            score -= 2.0; ev.append(f"-2.0 low volume {vol_ratio:.1f}x (illiquid)")
-        elif vol_ratio < 1.0:
-            score -= 0.8; ev.append(f"-0.8 below-avg volume {vol_ratio:.1f}x")
+        if rvol < 0.7:
+            score -= 2.0; ev.append(f"-2.0 RVOL very low {rvol:.1f}x (illiquid)")
+        elif rvol < 1.0:
+            score -= 0.8; ev.append(f"-0.8 RVOL below average {rvol:.1f}x")
         if macd_x == "bearish":
             score -= 2.0; ev.append("-2.0 MACD bearish cross")
         if atr_pct > 0.04:

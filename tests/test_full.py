@@ -83,8 +83,8 @@ new_modules = [
     "data.edgar",
     "trading.session_overrides",
     "trading.notifier",
-    "agents.agent",
-    "agents.analyst",
+    "agents.algo_decisions",
+    "agents.algo_analyst",
     "trading.orchestrator",
 ]
 for mod in new_modules:
@@ -228,8 +228,8 @@ section("4. SIGNAL SCORER")
 from analysis.signal_scorer import SignalScorer as scorer
 
 def test_score_floor():
-    assert config.MIN_SIGNAL_SCORE_TO_AI == 6.0, \
-        f"Expected 6.0, got {config.MIN_SIGNAL_SCORE_TO_AI}"
+    assert config.MIN_SIGNAL_SCORE_TO_AI == 5.0, \
+        f"Expected 5.0, got {config.MIN_SIGNAL_SCORE_TO_AI}"
     return f"MIN_SIGNAL_SCORE_TO_AI={config.MIN_SIGNAL_SCORE_TO_AI}"
 check("signal score gate is 6.0", test_score_floor)
 

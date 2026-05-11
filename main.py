@@ -90,7 +90,7 @@ def main():
     scheduler.add_job(
         orchestrator.run_scan_and_trade,
         "interval",
-        minutes=10,
+        minutes=5,
         id="scan_and_trade",
         max_instances=1,
         coalesce=True,
@@ -118,7 +118,7 @@ def main():
         max_instances=1,
     )
 
-    log.info("Scheduler started — position management every 2 min, scan every 10 min")
+    log.info("Scheduler started — position management every 2 min, scan every 5 min")
     scheduler.start()
 
     try:

@@ -65,25 +65,28 @@ class AlpacaBroker(OrdersMixin, MarketDataMixin):
         return self._trade_client.get_orders(filter=req)
 
     def has_active_stop_order(self, symbol: str, open_orders: list) -> bool:
-        """Return True if any open sell exists for the symbol, including bracket legs.
+        """Return True if a stop-type sell order (not a take-profit limit) exists for symbol.
 
         Args:
             symbol: Equity ticker to inspect.
             open_orders: Iterable returned by get_open_orders.
 
         Returns:
-            True when a matching sell or sell leg is open, otherwise False.
+            True when a stop or stop_limit sell is open; False when only a TP limit exists.
         """
-        def _is_sell(o) -> bool:
-            sym  = str(getattr(o, "symbol", "")).upper()
-            side = str(getattr(o, "side",   "")).lower()
-            return sym == symbol.upper() and "sell" in side
+        _STOP_TYPES = {"stop", "stop_limit", "trailing_stop"}
+
+        def _is_stop_sell(o) -> bool:
+            sym    = str(getattr(o, "symbol", "")).upper()
+            side   = str(getattr(o, "side",   "")).lower()
+            o_type = str(getattr(o, "order_type", "") or getattr(o, "type", "") or "").lower()
+            return sym == symbol.upper() and "sell" in side and o_type in _STOP_TYPES
 
         for o in open_orders:
-            if _is_sell(o):
+            if _is_stop_sell(o):
                 return True
             for leg in (getattr(o, "legs", None) or []):
-                if _is_sell(leg):
+                if _is_stop_sell(leg):
                     return True
         return False
 

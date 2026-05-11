@@ -34,7 +34,7 @@ class ScannerMixin:
         }
 
         log.info("Fetching bars for %d symbols across 3 timeframes…", len(scan_list))
-        bars_5m  = self.broker.get_bars_multi(scan_list, "5Min",  days=3)
+        bars_5m  = self.broker.get_bars_multi(scan_list, "5Min",  days=10)
         bars_15m = self.broker.get_bars_multi(scan_list, "15Min", days=5)
         bars_day = self.broker.get_bars_multi(scan_list, "1Day",  days=30)
         log.info("Bars received — 5m:%d  15m:%d  daily:%d symbols",
@@ -105,6 +105,49 @@ class ScannerMixin:
             bias_15  = self.indicators.get_higher_tf_bias(df_15)
             bias_day = self.indicators.get_higher_tf_bias(df_day)
             _dt_htf = _time.monotonic() - _t0
+
+            # True time-slot RVOL for day trading.
+            # Compares today's cumulative volume through bar N to the average
+            # cumulative volume through bar N across prior sessions in the 5-min
+            # history.  This correctly models the U-shaped intraday volume curve
+            # (opening heavy, midday light) without any linear-time-adjustment math.
+            # Requires days=10 so we have ~8 prior sessions to average over.
+            try:
+                _idx_et = df.index.tz_convert(config.ET) if df.index.tz else df.index
+                _today  = _idx_et[-1].date()
+                _today_mask = [t.date() == _today for t in _idx_et]
+                _prior_mask = [t.date() <  _today for t in _idx_et]
+                _df_today   = df[_today_mask]
+                _df_prior   = df[_prior_mask]
+                n_bars      = len(_df_today)   # bars completed so far today
+                if n_bars >= 1 and not _df_prior.empty:
+                    _prior_dates = sorted({t.date() for t in _idx_et[_prior_mask]})
+                    _prior_cumvols = []
+                    for _d in _prior_dates:
+                        _day_vols = _df_prior[[t.date() == _d for t in _idx_et[_prior_mask]]]["volume"]
+                        if len(_day_vols) >= n_bars:
+                            _prior_cumvols.append(float(_day_vols.iloc[:n_bars].sum()))
+                    _today_cumvol = float(_df_today["volume"].sum())
+                    if _prior_cumvols:
+                        _avg_prior = sum(_prior_cumvols) / len(_prior_cumvols)
+                        if _avg_prior > 0:
+                            sig["rvol"] = round(min(_today_cumvol / _avg_prior, 20.0), 2)
+            except Exception:
+                pass  # fall back to vol_ratio computed by compute_indicators
+
+            # Float lookup — fast SQLite read (7-day cache); None when symbol not yet cached
+            if hasattr(self, "float_cache") and self.float_cache is not None:
+                float_shares = self.float_cache.get_float_cached(symbol)
+                if float_shares is not None:
+                    sig["float_shares"] = float_shares
+                    if float_shares < 5_000_000:
+                        sig["float_tier"] = "micro"
+                    elif float_shares < 20_000_000:
+                        sig["float_tier"] = "small"
+                    elif float_shares < 100_000_000:
+                        sig["float_tier"] = "mid"
+                    else:
+                        sig["float_tier"] = "large"
 
             key_levels = self.indicators.get_key_levels(df, df_day)
             self._key_levels_cache[symbol] = key_levels

@@ -34,6 +34,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         notifier,
         screener,
         dynamic_watchlist,
+        float_cache,
         session_overrides,
         database,
     ):
@@ -60,6 +61,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             notifier: Email notifier.
             screener: Universe builder.
             dynamic_watchlist: Carry-forward watchlist store.
+            float_cache: FloatCache for per-symbol float share lookups.
             session_overrides: Study-driven threshold overrides.
             database: Database handle for SQLite.
         """
@@ -83,6 +85,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         self.notifier          = notifier
         self.screener          = screener
         self.dynamic_watchlist = dynamic_watchlist
+        self.float_cache       = float_cache
         self.session_overrides = session_overrides
         self.database          = database
 
@@ -282,7 +285,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             None.
         """
         if not self._scan_lock.acquire(blocking=False):
-            log.warning("Previous scan still running — skipping this 10-min tick")
+            log.warning("Previous scan still running — skipping this 5-min tick")
             return
         try:
             my_gen = self._scan_generation

@@ -87,9 +87,17 @@ GAP_AND_GO_MIN_VOL_PCT   = 2.0     # minimum gap % to qualify for Option B relax
 DEFAULT_STOP_LOSS_PCT      = 0.012  # minimum 1.2% stop (ATR × ATR_STOP_MULTIPLIER used when larger)
 DEFAULT_TAKE_PROFIT_PCT    = 0.025  # minimum 2.5% take profit
 ATR_STOP_MULTIPLIER        = 1.5    # stop placed at 1.5× ATR from entry
-TRAILING_STOP_TRIGGER_PCT  = 0.006  # activate trailing stop after +0.6% gain
-TRAILING_STOP_DISTANCE_PCT = 0.005  # trail 0.5% behind highest price
-BREAKEVEN_TRIGGER_PCT      = 0.003  # move stop to breakeven+buffer at +0.3% gain
+TRAILING_STOP_TRIGGER_PCT  = 0.006  # fallback when ATR unavailable
+TRAILING_STOP_DISTANCE_PCT = 0.005  # fallback when ATR unavailable
+BREAKEVEN_TRIGGER_PCT      = 0.003  # fallback when ATR unavailable
+
+# ATR-relative multipliers for breakeven and trailing (preferred over fixed pct above).
+# Breakeven: move stop after gaining ATR_BREAKEVEN_X × ATR (e.g. 0.8× a 1.5%-ATR stock = +1.2%)
+# Trailing trigger: activate after ATR_TRAIL_TRIGGER_X × ATR
+# Trailing distance: stop trails ATR_TRAIL_DISTANCE_X × ATR behind the highest price
+ATR_BREAKEVEN_X     = 0.8   # move to breakeven after +0.8× ATR
+ATR_TRAIL_TRIGGER_X = 1.5   # activate trailing after +1.5× ATR
+ATR_TRAIL_DISTANCE_X = 0.7  # trail 0.7× ATR behind the high
 
 # Confidence-scaled position sizing
 # Higher conviction signals get proportionally larger size.
@@ -263,7 +271,7 @@ CIRCUIT_BREAKER_UVXY_SURGE_PCT =  5.0   # UVXY up ≥ 5% intraday → stand asid
 EARNINGS_BLACKOUT_DAYS = 2        # skip stocks reporting within 2 calendar days
 
 # Time stop
-TIME_STOP_MINUTES      = 90       # max time to wait for thesis to materialise
+TIME_STOP_MINUTES      = 45       # max time to wait for thesis to materialise
 TIME_STOP_PROGRESS_PCT = 0.25     # must reach 25% of take-profit range by deadline
 
 # Partial profit (scale-out)

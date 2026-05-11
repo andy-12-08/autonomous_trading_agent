@@ -216,7 +216,7 @@ class ExecutorMixin:
             return None
 
         rr        = _safe_float(d.get("reward_to_risk"), 0.0)
-        vol_ratio = _safe_float(sig.get("vol_ratio") or d.get("vol_ratio"), 0.0)
+        vol_ratio = _safe_float(sig.get("rvol") or sig.get("vol_ratio") or d.get("vol_ratio"), 0.0)
         rsi       = _safe_float(sig.get("rsi")       or d.get("rsi"),       50.0)
 
         _now_et    = datetime.now(self._ET)
@@ -250,7 +250,7 @@ class ExecutorMixin:
             return None
 
         if _cur_min > _prime_end:
-            _conf = int(d.get("confidence", 0))
+            _conf = int(d.get("signal_confidence") or d.get("confidence") or 0)
             if _ss < config.MIDDAY_ENTRY_MIN_SCORE or _conf < config.MIDDAY_ENTRY_MIN_CONF:
                 self.database.record_decision(symbol, "SKIP", price,
                                 reasoning=(f"Midday gate: score {_ss:.1f}<{config.MIDDAY_ENTRY_MIN_SCORE} "
@@ -311,8 +311,32 @@ class ExecutorMixin:
         if not order:
             return None
 
-        order_id         = getattr(order, "id", None)
-        fill_price       = (self.broker.get_fill_price(str(order_id)) if order_id else None) or price
+        order_id   = getattr(order, "id", None)
+        fill_price = self.broker.get_fill_price(str(order_id), retries=6, delay=0.5) if order_id else None
+        if fill_price is None:
+            if order_id:
+                cancel_failed = False
+                try:
+                    self.broker._trade_client.cancel_order_by_id(str(order_id))
+                    log.warning("BUY %s: order %s not filled after 3s — cancelled", symbol, order_id)
+                except Exception as _ce:
+                    cancel_failed = True
+                    log.warning("Could not cancel order %s for %s: %s — checking broker position", order_id, symbol, _ce)
+                if cancel_failed:
+                    # Cancel failed — likely filled during the race.  Re-check position.
+                    try:
+                        _broker_pos = self.broker.get_positions().get(symbol)
+                        if _broker_pos is not None:
+                            fill_price = float(getattr(_broker_pos, "avg_entry_price", None) or price)
+                            log.info("BUY %s: cancel failed, broker position confirmed — fill=%.4f", symbol, fill_price)
+                    except Exception as _pe:
+                        log.warning("Broker position re-check failed for %s: %s", symbol, _pe)
+            if fill_price is None:
+                self.database.record_decision(symbol, "SKIP", price,
+                                reasoning="Order submitted but fill not confirmed within 3s — cancelled",
+                                signal_score=_ss, veto_rule="NO_FILL")
+                return None
+
         slippage_per_sh  = fill_price - price
         slippage_dollars = slippage_per_sh * qty
         if abs(slippage_per_sh) > 0.01:
@@ -392,13 +416,31 @@ class ExecutorMixin:
                         pnl=pnl, reasoning=full_reason, setup_type=setup_type)
 
         if action == "PARTIAL_SELL":
+            runner_qty  = float(pos_data.get("qty", 0)) - qty
+            runner_stop = pos_data.get("stop_loss", 0)
+            runner_tp   = pos_data.get("take_profit", 0)
             self.database.save_position(
                 symbol, pos_data.get("entry_price", 0),
-                float(pos_data.get("qty", 0)) - qty,
-                pos_data.get("stop_loss", 0), pos_data.get("take_profit", 0),
+                runner_qty,
+                runner_stop, runner_tp,
                 trailing=pos_data.get("trailing", False),
                 highest_price=pos_data.get("current_price"),
                 partial_taken=True, entry_ts=pos_data.get("entry_ts", ""))
+            # Resubmit broker protection for the runner — cancel stale bracket legs
+            # (sized for old qty) then place a fresh bracket for the remaining shares.
+            if runner_qty >= 1 and runner_stop and runner_tp:
+                try:
+                    self.broker.cancel_orders_for_symbol(symbol)
+                    self.broker.place_bracket_order(
+                        symbol, int(runner_qty), runner_stop, runner_tp)
+                    log.info("Runner bracket resubmitted %s: qty=%.0f SL=%.2f TP=%.2f",
+                             symbol, runner_qty, runner_stop, runner_tp)
+                except Exception as _re:
+                    log.warning("Could not resubmit runner bracket for %s: %s — submitting stop only", symbol, _re)
+                    try:
+                        self.broker.update_stop_loss(symbol, runner_stop)
+                    except Exception:
+                        pass
         else:
             self.database.remove_position(symbol)
             self.gfv_tracker.remove_buy(symbol)

@@ -32,8 +32,29 @@ class PositionsMixin:
             highest     = float(db.get("highest_price") or entry_price)
             stop_updated = False
 
-            if entry_price > 0 and self.risk_manager.should_move_to_breakeven(current_price, entry_price) and not trailing:
-                breakeven = round(entry_price * 1.0005, 2)  # entry + 0.05% buffer — exits green even with slippage
+            # Compute ATR for this position to make breakeven/trailing thresholds
+            # ATR-relative rather than fixed percentages.  A stock with 1.5% ATR
+            # oscillates ±0.5% on a single 5-min bar — fixed 0.3% breakeven would
+            # stop out every good trade on normal noise.
+            _atr = 0.0
+            if entry_price > 0:
+                try:
+                    _df_pos = self.broker.get_bars(symbol, "5Min", days=2)
+                    if _df_pos is not None and not _df_pos.empty:
+                        _df_pos = self.indicators.compute_indicators(_df_pos)
+                        _atr    = float(_df_pos["atr"].iloc[-1]) if not _df_pos.empty else 0.0
+                except Exception:
+                    pass
+
+            _atr_pct        = _atr / entry_price if entry_price > 0 and _atr > 0 else 0.0
+            _be_trigger_pct = max(_atr_pct * config.ATR_BREAKEVEN_X,     config.BREAKEVEN_TRIGGER_PCT)
+            _tr_trigger_pct = max(_atr_pct * config.ATR_TRAIL_TRIGGER_X,  config.TRAILING_STOP_TRIGGER_PCT)
+            _tr_dist_pct    = max(_atr_pct * config.ATR_TRAIL_DISTANCE_X, config.TRAILING_STOP_DISTANCE_PCT)
+
+            _gain_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
+
+            if entry_price > 0 and _gain_pct >= _be_trigger_pct and not trailing:
+                breakeven = round(entry_price * 1.0005, 2)
                 ok, _ = self.risk_manager.approve_stop_update(symbol, breakeven, stop_loss)
                 if ok:
                     stop_loss = breakeven
@@ -43,10 +64,11 @@ class PositionsMixin:
                                   trailing=False, highest_price=current_price)
                     self.database.record_decision(symbol, "UPDATE_STOP", current_price, qty,
                                     stop_loss=breakeven,
-                                    reasoning="Stop moved to breakeven+buffer at +0.3% gain")
+                                    reasoning=f"Stop moved to breakeven+buffer at +{_gain_pct:.1%} gain "
+                                              f"(trigger={_be_trigger_pct:.1%}, ATR={_atr_pct:.1%})")
 
-            elif entry_price > 0 and self.risk_manager.should_trail(current_price, entry_price) and not trailing:
-                new_stop = self.risk_manager.new_trailing_stop(current_price)
+            elif entry_price > 0 and _gain_pct >= _tr_trigger_pct and not trailing:
+                new_stop = round(current_price * (1 - _tr_dist_pct), 2)
                 ok, _ = self.risk_manager.approve_stop_update(symbol, new_stop, stop_loss)
                 if ok:
                     stop_loss = new_stop
@@ -57,10 +79,11 @@ class PositionsMixin:
                                   trailing=True, highest_price=current_price)
                     self.database.record_decision(symbol, "UPDATE_STOP", current_price, qty,
                                     stop_loss=new_stop,
-                                    reasoning="Trailing stop activated at +1.5% gain")
+                                    reasoning=f"Trailing stop activated at +{_gain_pct:.1%} gain "
+                                              f"(trigger={_tr_trigger_pct:.1%}, dist={_tr_dist_pct:.1%})")
 
             if trailing and current_price > highest:
-                new_stop = self.risk_manager.new_trailing_stop(current_price)
+                new_stop = round(current_price * (1 - _tr_dist_pct), 2)
                 ok, _ = self.risk_manager.approve_stop_update(symbol, new_stop, stop_loss)
                 if ok:
                     stop_loss = new_stop

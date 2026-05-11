@@ -137,14 +137,26 @@ class OrdersMixin:
         Returns:
             Alpaca order object on success, or None when skipped or failed.
         """
+        _STOP_TYPES = {"stop", "stop_limit", "trailing_stop"}
+
+        def _cancel_if_stop(o) -> bool:
+            o_type = str(getattr(o, "order_type", "") or getattr(o, "type", "") or "").lower()
+            o_side = str(getattr(o, "side", "")).lower()
+            o_sym  = str(getattr(o, "symbol", "")).upper()
+            if o_sym != symbol.upper() or "sell" not in o_side or o_type not in _STOP_TYPES:
+                return False
+            try:
+                self._trade_client.cancel_order_by_id(str(o.id))
+                log.info("Cancelled stop leg %s (%s) for %s before stop update", o.id, o_type, symbol)
+            except Exception:
+                pass
+            return True
+
         orders = self.get_open_orders()
         for o in orders:
-            if o.symbol == symbol:
-                try:
-                    self._trade_client.cancel_order_by_id(str(o.id))
-                    log.info("Cancelled order %s (%s) for %s before stop update", o.id, o.order_type, symbol)
-                except Exception:
-                    pass
+            _cancel_if_stop(o)
+            for leg in (getattr(o, "legs", None) or []):
+                _cancel_if_stop(leg)
         positions = self.get_positions()
         if symbol not in positions:
             return
