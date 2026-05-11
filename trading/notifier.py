@@ -310,7 +310,7 @@ class Notifier:
 
         def _send():
             try:
-                with smtplib.SMTP(self.config.SMTP_HOST, self.config.SMTP_PORT, timeout=15) as server:
+                with smtplib.SMTP(self.config.SMTP_HOST, self.config.SMTP_PORT, timeout=30) as server:
                     server.ehlo()
                     server.starttls()
                     server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
@@ -349,7 +349,7 @@ class Notifier:
 
             def _send():
                 try:
-                    with smtplib.SMTP(self.config.SMTP_HOST, self.config.SMTP_PORT, timeout=15) as server:
+                    with smtplib.SMTP(self.config.SMTP_HOST, self.config.SMTP_PORT, timeout=30) as server:
                         server.ehlo()
                         server.starttls()
                         server.login(self.config.SMTP_USER, self.config.SMTP_PASS)

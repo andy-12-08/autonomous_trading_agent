@@ -99,10 +99,12 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         self._eod_done:             bool           = False
         self._daily_pre_passed:     set            = set()
         self._force_run:            bool           = False
+        self._spy_trend_ok:         bool           = True  # updated each scan; False = SPY trending down
 
         self._state_lock  = threading.Lock()
         self._broker_lock = threading.Lock()
-        self._scan_lock   = threading.Lock()
+        self._scan_lock       = threading.Lock()
+        self._scan_generation = 0  # incremented when a scan thread is abandoned
 
         self._ET = config.ET
         self._SCAN_TIMEOUT_SECONDS = 480
@@ -283,16 +285,26 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             log.warning("Previous scan still running — skipping this 10-min tick")
             return
         try:
-            t = threading.Thread(target=self._scan_body, daemon=True, name="scan-body")
+            my_gen = self._scan_generation
+            t = threading.Thread(
+                target=self._scan_body, args=(my_gen,), daemon=True, name="scan-body"
+            )
             t.start()
             t.join(timeout=self._SCAN_TIMEOUT_SECONDS)
             if t.is_alive():
                 log.error(
                     "SCAN TIMEOUT after %ds — scan thread is stuck (hung API call?). "
-                    "Holding lock until thread finishes to prevent an overlapping scan.",
+                    "Waiting up to 120s for clean exit before releasing lock.",
                     self._SCAN_TIMEOUT_SECONDS,
                 )
-                t.join()  # blocks here; lock stays held until the thread actually exits
+                t.join(timeout=120)
+                if t.is_alive():
+                    self._scan_generation += 1  # invalidate the abandoned thread
+                    log.error(
+                        "Scan thread still alive after grace period — releasing lock. "
+                        "Abandoned thread (gen %d) will not execute decisions.",
+                        my_gen,
+                    )
         finally:
             self._scan_lock.release()
 

@@ -66,6 +66,16 @@ class SignalScorer(SignalRulesMixin):
         if ema9 > ema21 > ema50 > 0:
             score += 0.5; ev.append("+0.5 full EMA bull stack")
 
+        # ── EMA EXTENSION PENALTY ─────────────────────────────────────────────────
+        # Price too far above EMA21 = chasing a move already done; pullback risk high.
+        # Penalty scales with extension: 1.5% above → -0.6 pts, 3% above → -1.2 pts, cap -2.0.
+        if ema21 > 0 and price > 0:
+            ext = (price - ema21) / ema21
+            if ext > 0.015:
+                penalty = round(min(ext * 40, 2.0), 1)
+                score  -= penalty
+                ev.append(f"-{penalty} extended {ext:.1%} above EMA21 — pullback risk")
+
         # ── MOMENTUM — MACD (2.5 pts) ──────────────────────────────────────────────
         if macd_x == "bullish":
             score += 2.0; ev.append("+2.0 MACD bullish cross")

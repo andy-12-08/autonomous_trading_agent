@@ -14,6 +14,24 @@ class OrdersMixin:
         """
         self._trade_client.cancel_orders()
 
+    def cancel_orders_for_symbol(self, symbol: str) -> None:
+        """Cancel all open orders for a single symbol (e.g. bracket legs before a manual exit).
+
+        Args:
+            symbol: Ticker whose open orders should be cancelled.
+
+        Returns:
+            None.
+        """
+        orders = self.get_open_orders()
+        for o in orders:
+            if o.symbol == symbol:
+                try:
+                    self._trade_client.cancel_order_by_id(str(o.id))
+                    log.info("Cancelled order %s for %s", o.id, symbol)
+                except Exception as e:
+                    log.warning("Could not cancel order %s for %s: %s", o.id, symbol, e)
+
     def close_position(self, symbol: str) -> bool:
         """Flatten one position via the broker API.
 
@@ -121,10 +139,10 @@ class OrdersMixin:
         """
         orders = self.get_open_orders()
         for o in orders:
-            if o.symbol == symbol and o.order_type in ("stop", "stop_limit"):
+            if o.symbol == symbol:
                 try:
                     self._trade_client.cancel_order_by_id(str(o.id))
-                    log.info("Cancelled old stop for %s", symbol)
+                    log.info("Cancelled order %s (%s) for %s before stop update", o.id, o.order_type, symbol)
                 except Exception:
                     pass
         positions = self.get_positions()

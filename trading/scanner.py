@@ -1,6 +1,10 @@
+import concurrent.futures as _cf
 import time as _time
 import config
 from core.database import log
+
+_POOL_WORKERS = 6   # max concurrent symbol computations
+_LOOP_BUDGET  = 90  # total wall-clock seconds for symbol loop
 
 
 class ScannerMixin:
@@ -43,75 +47,99 @@ class ScannerMixin:
             except Exception:
                 spy_5m = None
 
+        # SPY trend gate: are the last 3 five-minute bars net positive?
+        # Used in the executor to block long entries when the market is falling.
+        if spy_5m is not None and len(spy_5m) >= 4:
+            _spy_c = spy_5m["close"].iloc[-4:].values
+            self._spy_trend_ok = bool(_spy_c[-1] > _spy_c[-4])  # last bar above 3 bars ago
+            log.info("SPY trend: %s (close %.2f vs %.2f, 3 bars ago)",
+                     "UP" if self._spy_trend_ok else "DOWN", _spy_c[-1], _spy_c[-4])
+        else:
+            self._spy_trend_ok = True  # can't determine — don't block
+
         raw = []
         _t_loop_start = _time.monotonic()
-        for symbol in scan_list:
-            _t_sym = _time.monotonic()
-            try:
-                df = bars_5m.get(symbol)
-                if df is None or df.empty or len(df) < 25:
-                    continue
-                _t0 = _time.monotonic()
-                df  = self.indicators.compute_indicators(df)
-                _dt_ind = _time.monotonic() - _t0
 
-                sig = self.indicators.get_signal_summary(df)
-                if not sig:
-                    continue
+        def _compute_symbol(symbol):
+            df = bars_5m.get(symbol)
+            if df is None or df.empty or len(df) < 25:
+                return None
+            _t0 = _time.monotonic()
+            df  = self.indicators.compute_indicators(df)
+            _dt_ind = _time.monotonic() - _t0
 
-                if self.risk_manager.is_too_volatile(sig.get("atr", 0), sig.get("price", 1)):
-                    log.info("Skip %s — ATR too high (%.1f%%)",
-                             symbol, sig.get("atr", 0) / sig.get("price", 1) * 100)
-                    continue
+            sig = self.indicators.get_signal_summary(df)
+            if not sig:
+                return None
 
-                sym_price = sig.get("price", 0)
-                if sym_price < config.SCREENER_MIN_PRICE:
-                    log.info("Skip %s — price too low ($%.2f)", symbol, sym_price)
-                    continue
+            if self.risk_manager.is_too_volatile(sig.get("atr", 0), sig.get("price", 1)):
+                log.info("Skip %s — ATR too high (%.1f%%)",
+                         symbol, sig.get("atr", 0) / sig.get("price", 1) * 100)
+                return None
 
-                atr_pct   = sig.get("atr", 0) / max(sym_price, 0.01)
-                vol_ratio = sig.get("vol_ratio", 0)
-                trend     = sig.get("trend", "neutral")
-                above_vwap = sig.get("above_vwap", False)
-                if atr_pct < 0.004 and vol_ratio < 0.6 and trend == "neutral" and not above_vwap:
-                    continue
+            sym_price = sig.get("price", 0)
+            if sym_price < config.SCREENER_MIN_PRICE:
+                log.info("Skip %s — price too low ($%.2f)", symbol, sym_price)
+                return None
 
-                if spy_5m is not None and symbol != "SPY":
-                    rs = self.indicators.compute_relative_strength(df, spy_5m)
-                    if rs is not None:
-                        sig["rs_vs_spy"] = rs
+            atr_pct    = sig.get("atr", 0) / max(sym_price, 0.01)
+            vol_ratio  = sig.get("vol_ratio", 0)
+            trend      = sig.get("trend", "neutral")
+            above_vwap = sig.get("above_vwap", False)
+            if atr_pct < 0.004 and vol_ratio < 0.6 and trend == "neutral" and not above_vwap:
+                return None
 
-                sig.update(self.indicators.compute_premium_discount(df))
-                sig.update(self.indicators.detect_fvg(df))
-                sig.update(self.indicators.detect_liquidity_sweep(df, key_levels=self._key_levels_cache.get(symbol)))
-                sig.update(self.indicators.compute_volume_profile(df))
+            if spy_5m is not None and symbol != "SPY":
+                rs = self.indicators.compute_relative_strength(df, spy_5m)
+                if rs is not None:
+                    sig["rs_vs_spy"] = rs
 
-                _t0 = _time.monotonic()
-                df_15  = bars_15m.get(symbol)
-                df_day = bars_day.get(symbol)
-                bias_15  = self.indicators.get_higher_tf_bias(df_15)
-                bias_day = self.indicators.get_higher_tf_bias(df_day)
-                _dt_htf = _time.monotonic() - _t0
+            sig.update(self.indicators.compute_premium_discount(df))
+            sig.update(self.indicators.detect_fvg(df))
+            sig.update(self.indicators.detect_liquidity_sweep(df, key_levels=self._key_levels_cache.get(symbol)))
+            sig.update(self.indicators.compute_volume_profile(df))
 
-                key_levels = self.indicators.get_key_levels(df, df_day)
-                self._key_levels_cache[symbol] = key_levels
+            _t0 = _time.monotonic()
+            df_15  = bars_15m.get(symbol)
+            df_day = bars_day.get(symbol)
+            bias_15  = self.indicators.get_higher_tf_bias(df_15)
+            bias_day = self.indicators.get_higher_tf_bias(df_day)
+            _dt_htf = _time.monotonic() - _t0
 
-                _dt_sym = _time.monotonic() - _t_sym
-                if _dt_sym > 0.5:
-                    log.warning("SLOW symbol %s: total=%.2fs ind=%.2fs htf=%.2fs",
-                                symbol, _dt_sym, _dt_ind, _dt_htf)
+            key_levels = self.indicators.get_key_levels(df, df_day)
+            self._key_levels_cache[symbol] = key_levels
 
-                raw.append({
-                    "symbol":     symbol,
-                    "bucket":     config.SYMBOL_BUCKET.get(symbol, "unknown"),
-                    "in_plan":    symbol in plan_candidates,
-                    "indicators": sig,
-                    "bias_15min": bias_15,
-                    "bias_daily": bias_day,
-                    "key_levels": key_levels,
-                })
-            except Exception as e:
-                log.warning("Watchlist error %s: %s", symbol, e)
+            _dt_sym = _time.monotonic() - _t0 + _dt_ind + _dt_htf
+            if _dt_sym > 0.5:
+                log.warning("SLOW symbol %s: total=%.2fs ind=%.2fs htf=%.2fs",
+                            symbol, _dt_sym, _dt_ind, _dt_htf)
+
+            return {
+                "symbol":     symbol,
+                "bucket":     config.SYMBOL_BUCKET.get(symbol, "unknown"),
+                "in_plan":    symbol in plan_candidates,
+                "indicators": sig,
+                "bias_15min": bias_15,
+                "bias_daily": bias_day,
+                "key_levels": key_levels,
+            }
+
+        pool    = _cf.ThreadPoolExecutor(max_workers=_POOL_WORKERS)
+        futures = {pool.submit(_compute_symbol, sym): sym for sym in scan_list}
+        try:
+            for fut in _cf.as_completed(futures, timeout=_LOOP_BUDGET):
+                sym = futures[fut]
+                try:
+                    result = fut.result(timeout=0)
+                    if result is not None:
+                        raw.append(result)
+                except Exception as exc:
+                    log.warning("Watchlist error %s: %s", sym, exc)
+        except _cf.TimeoutError:
+            pending = sum(1 for f in futures if not f.done())
+            log.warning("Symbol loop budget exhausted (>%ds) — %d results, %d abandoned",
+                        _LOOP_BUDGET, len(raw), pending)
+        pool.shutdown(wait=False, cancel_futures=True)
 
         log.info("Symbol loop done: %d candidates in %.1fs", len(raw), _time.monotonic() - _t_loop_start)
         scored = self.signal_scorer.filter_watchlist(

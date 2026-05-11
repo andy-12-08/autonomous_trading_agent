@@ -238,9 +238,48 @@ class ExecutorMixin:
         else:
             _vol_floor = None
 
+        # ── Entry time gate ───────────────────────────────────────────────────────
+        _prime_end = config.PRIME_ENTRY_END_HOUR * 60 + config.PRIME_ENTRY_END_MIN
+        _close_min = config.MARKET_CLOSE_HOUR    * 60 + config.MARKET_CLOSE_MIN
+
+        if _cur_min >= _close_min:
+            self.database.record_decision(symbol, "SKIP", price,
+                            reasoning="Late-day gate: no new entries after 3:45 PM ET",
+                            signal_score=_ss, veto_rule="LATE_DAY_GATE")
+            log.info("Late-day gate: no new entries after 3:45 ET — skip %s", symbol)
+            return None
+
+        if _cur_min > _prime_end:
+            _conf = int(d.get("confidence", 0))
+            if _ss < config.MIDDAY_ENTRY_MIN_SCORE or _conf < config.MIDDAY_ENTRY_MIN_CONF:
+                self.database.record_decision(symbol, "SKIP", price,
+                                reasoning=(f"Midday gate: score {_ss:.1f}<{config.MIDDAY_ENTRY_MIN_SCORE} "
+                                           f"or conf {_conf}<{config.MIDDAY_ENTRY_MIN_CONF} outside prime window"),
+                                signal_score=_ss, veto_rule="MIDDAY_GATE")
+                log.info("Midday gate %s: score=%.1f conf=%d — need ≥%.1f/≥%d outside 9:30–10:15 prime window",
+                         symbol, _ss, _conf, config.MIDDAY_ENTRY_MIN_SCORE, config.MIDDAY_ENTRY_MIN_CONF)
+                return None
+
+        # ── SPY trend gate ────────────────────────────────────────────────────────
+        # Block long entries when the broad market is trending down over the last 15 min.
+        # Gap-and-go setups are exempt — a stock gapping up vs a down SPY shows real RS.
+        if not getattr(self, "_spy_trend_ok", True) and not _gap_go:
+            self.database.record_decision(symbol, "SKIP", price,
+                            reasoning="SPY trend gate: market trending down — no long entries",
+                            signal_score=_ss, veto_rule="SPY_TREND_GATE")
+            log.info("SPY trend gate %s: SPY bearish last 3 bars — skipping long entry", symbol)
+            return None
+
         quote       = self.broker.get_latest_quote(symbol)
         spread_pct  = quote["spread_pct"] if quote else None
         limit_price = round(quote["ask"] + 0.01, 2) if quote else None
+
+        if limit_price is None:
+            self.database.record_decision(symbol, "SKIP", price,
+                            reasoning="No valid quote — skipping to avoid unprotected market entry (IEX data gap or spread >5%)",
+                            signal_score=_ss, veto_rule="NO_QUOTE")
+            log.warning("Skip %s — no valid quote from IEX; refusing market-order fallback to avoid slippage", symbol)
+            return None
 
         edgar_veto, edgar_reason = self.edgar.check_fresh_8k(symbol)
         if edgar_veto:

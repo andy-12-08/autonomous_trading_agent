@@ -89,7 +89,7 @@ class NewsStream:
                     on_error=self._on_error,
                     on_close=self._on_close,
                 )
-                self._ws.run_forever(ping_interval=30, ping_timeout=10)
+                self._ws.run_forever(ping_interval=60, ping_timeout=20)
             except Exception as exc:
                 log.warning("NewsStream loop error: %s", exc)
             self._connected = False

@@ -1,3 +1,4 @@
+import concurrent.futures as _cf
 import time
 from datetime import date, datetime, timedelta, timezone
 
@@ -91,24 +92,35 @@ class MarketDataMixin:
             end=end,
             feed="iex",
         )
+        _TIMEOUT = 45
+        _pool = _cf.ThreadPoolExecutor(max_workers=1)
+        _fut  = _pool.submit(self._data_client.get_stock_bars, req)
         try:
-            bars   = self._data_client.get_stock_bars(req)
-            df_all = bars.df
-            result: dict[str, pd.DataFrame] = {}
-            if isinstance(df_all.index, pd.MultiIndex):
-                for sym in symbols:
-                    try:
-                        df_sym = df_all.xs(sym, level=0).sort_index()
-                        if not df_sym.empty:
-                            result[sym] = df_sym
-                    except KeyError:
-                        pass
-            elif not df_all.empty and len(symbols) == 1:
-                result[symbols[0]] = df_all.sort_index()
-            return result
+            bars = _fut.result(timeout=_TIMEOUT)
+            _pool.shutdown(wait=False)
+        except _cf.TimeoutError:
+            _pool.shutdown(wait=False)
+            log.warning("get_bars_multi timed out after %ds (%d symbols, %s) — returning empty",
+                        _TIMEOUT, len(symbols), timeframe)
+            return {}
         except Exception as e:
+            _pool.shutdown(wait=False)
             log.warning("get_bars_multi failed (%d symbols, %s): %s", len(symbols), timeframe, e)
             return {}
+
+        df_all = bars.df
+        result: dict[str, pd.DataFrame] = {}
+        if isinstance(df_all.index, pd.MultiIndex):
+            for sym in symbols:
+                try:
+                    df_sym = df_all.xs(sym, level=0).sort_index()
+                    if not df_sym.empty:
+                        result[sym] = df_sym
+                except KeyError:
+                    pass
+        elif not df_all.empty and len(symbols) == 1:
+            result[symbols[0]] = df_all.sort_index()
+        return result
 
     def get_latest_price(self, symbol: str) -> float | None:
         """Return the most recent close price for a symbol.
@@ -287,33 +299,54 @@ class MarketDataMixin:
         BATCH  = 500
         result: dict[str, dict] = {}
 
+        _SNAP_TIMEOUT = 30
         for i in range(0, len(symbols), BATCH):
             batch = symbols[i : i + BATCH]
+            req   = StockSnapshotRequest(symbol_or_symbols=batch, feed="iex")
+            _pool = _cf.ThreadPoolExecutor(max_workers=1)
+            _fut  = _pool.submit(self._data_client.get_stock_snapshot, req)
             try:
-                req   = StockSnapshotRequest(symbol_or_symbols=batch, feed="iex")
-                snaps = self._data_client.get_stock_snapshot(req)
-                for sym, snap in snaps.items():
-                    try:
-                        daily      = getattr(snap, "daily_bar",      None)
-                        prev       = getattr(snap, "prev_daily_bar", None)
-                        latest     = getattr(snap, "latest_trade",   None)
-                        price      = float(getattr(latest, "price",  0) or 0)
-                        volume     = float(getattr(daily,  "volume", 0) or 0)
-                        prev_close = float(getattr(prev,   "close",  0) or 0)
-                        if price <= 0 or volume <= 0:
-                            continue
-                        change_pct = ((price - prev_close) / prev_close * 100
-                                      if prev_close else 0.0)
-                        result[sym] = {
-                            "price":        round(price,         2),
-                            "volume":       int(volume),
-                            "dollar_volume": round(price * volume, 0),
-                            "change_pct":   round(change_pct,    2),
-                        }
-                    except Exception:
-                        pass
+                snaps = _fut.result(timeout=_SNAP_TIMEOUT)
+                _pool.shutdown(wait=False)
+            except _cf.TimeoutError:
+                _pool.shutdown(wait=False)
+                log.warning("Snapshot batch timed out after %ds (offset=%d n=%d) — skipping",
+                            _SNAP_TIMEOUT, i, len(batch))
+                time.sleep(0.2)
+                continue
             except Exception as e:
+                _pool.shutdown(wait=False)
                 log.warning("Snapshot batch failed (offset=%d n=%d): %s", i, len(batch), e)
+                time.sleep(0.2)
+                continue
+
+            for sym, snap in snaps.items():
+                try:
+                    daily      = getattr(snap, "daily_bar",      None)
+                    prev       = getattr(snap, "prev_daily_bar", None)
+                    latest     = getattr(snap, "latest_trade",   None)
+                    price      = float(getattr(latest, "price",  0) or 0)
+                    volume     = float(getattr(daily,  "volume", 0) or 0)
+                    prev_close = float(getattr(prev,   "close",  0) or 0)
+                    if price <= 0 or volume <= 0:
+                        continue
+                    if prev_close > 0:
+                        change_pct = (price - prev_close) / prev_close * 100
+                    else:
+                        # IEX snapshot does not populate prev_daily_bar — fall back to
+                        # today's open so we can still identify intraday movers.
+                        day_open = float(getattr(daily, "open", 0) or 0)
+                        change_pct = ((price - day_open) / day_open * 100
+                                      if day_open > 0 else 0.0)
+                    result[sym] = {
+                        "price":        round(price,         2),
+                        "volume":       int(volume),
+                        "dollar_volume": round(price * volume, 0),
+                        "change_pct":   round(change_pct,    2),
+                    }
+                except Exception:
+                    pass
+            time.sleep(0.1)  # pace requests to avoid IEX rate-limit accumulation
 
         return result
 

@@ -45,7 +45,7 @@ class Screener:
         self._snapshot_cache: list[str] = []
         self._snapshot_cache_ts = None
         self._snapshot_raw: list[dict] = []   # raw candidates with change_pct, used by gainers
-        self.SNAPSHOT_CACHE_TTL_MIN = 15
+        self.SNAPSHOT_CACHE_TTL_MIN = 30
         self.SNAPSHOT_MIN_DOLLAR_VOLUME = 5_000_000   # $5M — institutional liquidity threshold
         self.SNAPSHOT_MIN_MOVE_PCT = 0.5              # must be moving ≥ 0.5% from yesterday
 
@@ -109,29 +109,54 @@ class Screener:
 
     def _fetch_gainers(self, top: int = 50) -> list[str]:
         """
-        Return top gainers by % change, derived from the already-fetched snapshot.
+        Return top gainers by % change from the snapshot, with a live fallback.
 
-        Uses _snapshot_raw (populated by _snapshot_screen) so no extra API call
-        is needed. Falls back to empty list if the snapshot has not been populated yet.
+        Primary: derives from _snapshot_raw (no extra API call needed). The snapshot
+        uses today's open as the reference when IEX omits prev_daily_bar, so this
+        correctly captures intraday movers.
+
+        Fallback: when the snapshot yields zero results (e.g. pre-market or IEX data
+        gap), calls most-actives by=trades as a live proxy for high-activity movers.
 
         Args:
             top: Maximum number of gainers to return.
 
         Returns:
-            List of symbol strings sorted by % change descending, capped at top.
+            List of symbol strings sorted by % change descending (or by trade count
+            for the fallback), capped at top.
         """
-        if not self._snapshot_raw:
-            log.warning("Screener gainers: snapshot not yet available — skipping")
-            return []
+        if self._snapshot_raw:
+            gainers = sorted(
+                (d for d in self._snapshot_raw if d["change_pct"] >= 0.5),
+                key=lambda d: d["change_pct"],
+                reverse=True,
+            )
+            symbols = [d["sym"] for d in gainers[:top]]
+            log.info("Screener top-gainers: %d symbols (derived from snapshot)", len(symbols))
+            if symbols:
+                return symbols
 
-        gainers = sorted(
-            (d for d in self._snapshot_raw if d["change_pct"] >= 0.5),
-            key=lambda d: d["change_pct"],
-            reverse=True,
-        )
-        symbols = [d["sym"] for d in gainers[:top]]
-        log.info("Screener top-gainers: %d symbols (derived from snapshot)", len(symbols))
-        return symbols
+        # Fallback: snapshot yielded nothing — use most-actives by trade count as a
+        # proxy for stocks in motion (captures gap-ups and catalyst plays live).
+        log.info("Screener gainers: snapshot empty — falling back to most-actives by trades")
+        try:
+            resp = requests.get(
+                f"{_DATA_BASE}/v1beta1/screener/stocks/most-actives",
+                headers=Screener._headers(),
+                params={"by": "trades", "top": top},
+                timeout=8,
+            )
+            resp.raise_for_status()
+            symbols = [
+                item["symbol"]
+                for item in resp.json().get("most_actives", [])
+                if Screener._valid_sym(item.get("symbol", ""))
+            ]
+            log.info("Screener top-gainers fallback (by trades): %d symbols", len(symbols))
+            return symbols
+        except Exception as e:
+            log.warning("Screener gainers fallback failed (%s)", e)
+            return []
 
     def _snapshot_screen(self, top: int = 300) -> list[str]:
         """

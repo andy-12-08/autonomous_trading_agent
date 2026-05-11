@@ -75,7 +75,7 @@ CLAUDE_MAX_RETRIES = 3
 MIN_REWARD_TO_RISK    = 2.0         # minimum 2:1 R:R — cut losses fast, let winners run
 MIN_SIGNAL_CONFIDENCE = 6           # hard floor
 MIN_VOL_RATIO_ENTRY   = 0.7         # require stock is on pace for ≥70% of avg daily volume (time-adjusted)
-MAX_SPREAD_PCT        = 0.003       # max 0.3% bid-ask spread (Rule 1: tight spread)
+MAX_SPREAD_PCT        = 0.02        # max 2.0% bid-ask spread — IEX quotes are wider than NBBO; true NBBO for liquid stocks is ~0.01%
 
 # Early-window vol_ratio relaxation
 # In the first 55 minutes after open (9:35–10:30 ET), cumulative volume is still
@@ -92,9 +92,9 @@ GAP_AND_GO_MIN_VOL_PCT   = 2.0     # minimum gap % to qualify for Option B relax
 DEFAULT_STOP_LOSS_PCT      = 0.012  # minimum 1.2% stop (ATR × ATR_STOP_MULTIPLIER used when larger)
 DEFAULT_TAKE_PROFIT_PCT    = 0.025  # minimum 2.5% take profit
 ATR_STOP_MULTIPLIER        = 1.5    # stop placed at 1.5× ATR from entry
-TRAILING_STOP_TRIGGER_PCT  = 0.015  # activate trailing stop after +1.5% gain
-TRAILING_STOP_DISTANCE_PCT = 0.012  # trail 1.2% behind highest price
-BREAKEVEN_TRIGGER_PCT      = 0.010  # move stop to breakeven at +1.0% gain
+TRAILING_STOP_TRIGGER_PCT  = 0.006  # activate trailing stop after +0.6% gain
+TRAILING_STOP_DISTANCE_PCT = 0.005  # trail 0.5% behind highest price
+BREAKEVEN_TRIGGER_PCT      = 0.003  # move stop to breakeven+buffer at +0.3% gain
 
 # Confidence-scaled position sizing
 # Higher conviction signals get proportionally larger size.
@@ -112,11 +112,13 @@ CONFIDENCE_SIZE_SCALE: dict[int, float] = {
 # Max 1 position per bucket unless high-conviction (confidence ≥ 9)
 SECTOR_BUCKETS = {
     "tech":        ["AAPL","MSFT","NVDA","AMD","GOOGL","META","INTC","QCOM","AVGO",
-                    "ORCL","CRM","ADBE","NFLX","UBER","PLTR","CRWD","PANW","SNOW","DDOG","ARM"],
+                    "ORCL","CRM","ADBE","NFLX","UBER","PLTR","CRWD","PANW","SNOW","DDOG","ARM",
+                    "WDC","MU","STX","SNDK"],
     "consumer":    ["AMZN","TSLA","WMT","TGT","COST","NKE","DIS","MCD","HD","LOW",
                     "SBUX","ABNB","BKNG","F","GM"],
     "finance":     ["JPM","BAC","GS","WFC","MS","C","V","MA","AXP","BLK","SCHW",
-                    "COF","USB","COIN","SQ"],
+                    "COF","USB"],
+    "crypto":      ["COIN","SQ","IBIT","MSTU"],
     "energy":      ["XOM","CVX","COP","SLB","EOG","MPC","PSX","VLO","HAL","DVN"],
     "healthcare":  ["UNH","JNJ","PFE","ABBV","MRK","LLY","TMO","AMGN","BMY","CVS",
                     "GILD","ISRG","MRNA","REGN","VRTX"],
@@ -134,9 +136,10 @@ SYMBOL_BUCKET: dict[str, str] = {
 
 # Watchlist: ~75 liquid, large-cap stocks across all sectors — always scanned
 WATCHLIST = [
-    # tech (20)
+    # tech (24)
     "AAPL","MSFT","NVDA","AMD","GOOGL","META","INTC","QCOM","AVGO",
     "ORCL","CRM","ADBE","NFLX","UBER","PLTR","CRWD","PANW","SNOW","DDOG","ARM",
+    "WDC","MU","STX","SNDK",
     # consumer (10)
     "AMZN","TSLA","WMT","TGT","COST","NKE","DIS","MCD","HD","SBUX",
     # finance (10)
@@ -147,8 +150,8 @@ WATCHLIST = [
     "UNH","JNJ","PFE","ABBV","MRK","LLY","AMGN","GILD","MRNA",
     # industrial (6)
     "BA","CAT","GE","HON","UPS","RTX",
-    # index ETFs (8)
-    "SPY","QQQ","IWM","XLK","XLF","XLE","XLV","GLD",
+    # index ETFs (9)
+    "SPY","QQQ","IWM","XLK","XLF","XLE","XLV","GLD","IBIT",
 ]
 
 # Morning study window
@@ -164,6 +167,13 @@ STUDY_END_HOUR          = 9    # study ends at 9:35 ET
 STUDY_END_MIN           = 35   # trading begins at 9:35 ET
 MARKET_CLOSE_HOUR       = 15
 MARKET_CLOSE_MIN        = 45   # last entry window closes at 3:45
+
+# Prime entry window — highest-quality momentum occurs in the first 45 min after open.
+# Outside this window, only very high conviction setups are allowed through.
+PRIME_ENTRY_END_HOUR    = 10
+PRIME_ENTRY_END_MIN     = 15
+MIDDAY_ENTRY_MIN_SCORE  = 9.0  # signal score required outside prime window
+MIDDAY_ENTRY_MIN_CONF   = 8    # Claude confidence required outside prime window
 
 # Scheduler fires every SCAN_INTERVAL_MINUTES throughout the day.
 # During high-volume windows (9:35–11:00 and 2:30–3:45) every cycle runs a full scan.

@@ -81,11 +81,28 @@ class IndicatorEngine(PatternsMixin):
         # Today's session open as a UTC-comparable timestamp
         _et_open   = _et_last.replace(hour=9, minute=30, second=0, microsecond=0)
         _utc_open  = _et_open.tz_convert("UTC") if _et_open.tzinfo is not None else _et_open
-        _today_vol = float(vol[df.index >= _utc_open].sum())
-        _elapsed   = max(1, min(_et_last.hour * 60 + _et_last.minute - 570, 390))
-        _avg_dvol  = float(df["vol_sma20"].iloc[-1]) * 78
-        _expected  = _avg_dvol * (_elapsed / 390.0)
-        df["vol_ratio"] = min(_today_vol / _expected, 10.0) if _expected > 0 else 0.0
+        _today_mask  = df.index >= _utc_open
+        _today_bars  = int(_today_mask.sum())
+        _today_vol   = float(vol[_today_mask].sum())
+        _elapsed     = max(1, min(_et_last.hour * 60 + _et_last.minute - 570, 390))
+        _avg_dvol    = float(df["vol_sma20"].iloc[-1]) * 78
+        _expected    = _avg_dvol * (_elapsed / 390.0)
+        if _today_vol == 0 and _today_bars > 0:
+            # Today's bars exist but all report zero volume — IEX data gap.
+            # Fall back to neutral rather than falsely vetoing the symbol.
+            log.warning("vol_ratio IEX gap: %d today-bars all zero volume "
+                        "(avg_dvol=%.0f expected=%.0f elapsed=%dm) — using 1.0",
+                        _today_bars, _avg_dvol, _expected, _elapsed)
+            _vol_ratio = 1.0
+        elif _expected > 0:
+            _vol_ratio = min(_today_vol / _expected, 10.0)
+        elif _today_bars > 0:
+            # No historical volume average (all bars zero) but today has bars — data gap.
+            log.warning("vol_ratio IEX gap: avg_dvol=0 with %d today-bars — using 1.0", _today_bars)
+            _vol_ratio = 1.0
+        else:
+            _vol_ratio = 0.0
+        df["vol_ratio"] = _vol_ratio
 
         # ── VWAP (intraday reset — cumulates per calendar day, not across days) ───
         _day_key = [t.date() for t in df.index]   # list of Python date objects — groupby key

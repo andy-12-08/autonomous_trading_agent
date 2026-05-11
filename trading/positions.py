@@ -33,7 +33,7 @@ class PositionsMixin:
             stop_updated = False
 
             if entry_price > 0 and self.risk_manager.should_move_to_breakeven(current_price, entry_price) and not trailing:
-                breakeven = round(entry_price, 2)
+                breakeven = round(entry_price * 1.0005, 2)  # entry + 0.05% buffer — exits green even with slippage
                 ok, _ = self.risk_manager.approve_stop_update(symbol, breakeven, stop_loss)
                 if ok:
                     stop_loss = breakeven
@@ -43,7 +43,7 @@ class PositionsMixin:
                                   trailing=False, highest_price=current_price)
                     self.database.record_decision(symbol, "UPDATE_STOP", current_price, qty,
                                     stop_loss=breakeven,
-                                    reasoning="Stop moved to breakeven at +1.0% gain")
+                                    reasoning="Stop moved to breakeven+buffer at +0.3% gain")
 
             elif entry_price > 0 and self.risk_manager.should_trail(current_price, entry_price) and not trailing:
                 new_stop = self.risk_manager.new_trailing_stop(current_price)
@@ -309,8 +309,7 @@ class PositionsMixin:
             if not gfv_safe:
                 log.warning("Time stop blocked by GFV for %s: %s", sym, gfv_reason)
                 continue
-            order = self.broker.place_market_order(sym, qty, "SELL")
-            if not order:
+            if not self.broker.close_position(sym):
                 continue
             with self._state_lock:
                 self._daily_pnl += pnl
@@ -356,6 +355,7 @@ class PositionsMixin:
             if not gfv_safe:
                 log.info("Partial profit blocked by GFV for %s: %s", sym, gfv_reason)
                 continue
+            self.broker.cancel_orders_for_symbol(sym)
             order = self.broker.place_market_order(sym, half_qty, "SELL")
             if not order:
                 continue
