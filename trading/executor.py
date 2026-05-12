@@ -161,6 +161,8 @@ class ExecutorMixin:
         elif not stop_loss or not take_profit:
             stop_loss   = float(rm_sl or stop_loss or price * 0.98)
             take_profit = float(rm_tp or take_profit or price * 1.04)
+        # TP is a bracket-validity placeholder; step-trailing stop is the real exit.
+        take_profit = round(price * config.BRACKET_TP_SAFETY, 2)
         if not stop_loss or not take_profit:
             self.database.record_decision(symbol, "SKIP", price,
                             reasoning="Could not compute valid SL/TP — skipping",
@@ -215,7 +217,9 @@ class ExecutorMixin:
             log.warning("PORTFOLIO HEAT veto %s: %s", symbol, heat_reason)
             return None
 
-        rr        = _safe_float(d.get("reward_to_risk"), 0.0)
+        _stop_dist   = price - stop_loss   if stop_loss   else 0.0
+        _reward_dist = take_profit - price if take_profit else 0.0
+        rr        = round(_reward_dist / _stop_dist, 2) if _stop_dist > 0 else 0.0
         vol_ratio = _safe_float(sig.get("rvol") or sig.get("vol_ratio") or d.get("vol_ratio"), 0.0)
         rsi       = _safe_float(sig.get("rsi")       or d.get("rsi"),       50.0)
 

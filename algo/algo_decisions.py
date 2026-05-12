@@ -40,7 +40,7 @@ _SCORE_CONF = [
 ]
 
 MIN_BUY_SCORE = 7.0   # floor below which we never BUY
-MAX_BUYS      = 5     # maximum BUY decisions per scan cycle
+MAX_BUYS      = 10    # candidates passed to execution — real cap is MAX_CONCURRENT_POSITIONS
 
 
 def _score_to_conf(score: float) -> int:
@@ -184,6 +184,10 @@ class AlgoDecisionEngine:
                     f"Score {score:.1f} [{item.get('signal_class', '')}]; {evidence}"
                 ),
                 "reason_to_avoid":   "",
+                # Carry scanner-computed volume and RSI through so the executor
+                # doesn't have to recompute them from a short 2-day bar window.
+                "vol_ratio":         sig.get("rvol") or sig.get("vol_ratio") or 0.0,
+                "rsi":               sig.get("rsi") or 50.0,
             })
             buys += 1
 
@@ -236,11 +240,20 @@ def _volume_profile_gate(sig: dict, score: float) -> tuple[bool, str]:
             )
 
     # Near POC — the highest-volume price acts as a gravitational centre.
-    # Without escape velocity (score ≥ 9.0) or a confirmed breakout above VAH,
-    # price will likely revert to POC rather than trend away from it.
+    # Score ≥ 9.0 can bypass this gate ONLY when price is at or above the POC
+    # (i.e. the stock has cleared the max-volume node and is now using it as support).
+    # Buying BELOW the POC means the POC is overhead supply — no score overrides that.
     if sig.get("near_poc") and not sig.get("above_value_area"):
-        if score < 9.0:
-            poc_str = f"POC {float(poc):.2f}" if poc else ""
+        _price    = float(sig.get("price") or 0)
+        _poc_val  = float(poc) if poc else 0.0
+        _below_poc = _poc_val > 0 and _price < _poc_val
+        if score < 9.0 or _below_poc:
+            poc_str = f"POC {_poc_val:.2f}" if _poc_val else ""
+            if _below_poc:
+                return True, (
+                    f"Near POC {poc_str} and price {_price:.2f} is below it — "
+                    "buying into overhead supply, high reversion probability"
+                )
             return True, (
                 f"Near POC {poc_str} — max-volume magnet, "
                 "high reversion probability before any continuation move"

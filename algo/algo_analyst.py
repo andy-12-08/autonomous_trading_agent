@@ -14,7 +14,7 @@ import sqlite3
 from datetime import datetime
 
 import config
-from agents.study_data import StudyDataMixin
+from algo.study_data import StudyDataMixin
 from core.database import log
 
 

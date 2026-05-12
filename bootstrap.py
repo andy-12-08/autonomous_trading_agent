@@ -1,9 +1,9 @@
 import config
-from agents.algo_decisions import AlgoDecisionEngine
+from algo.algo_decisions import AlgoDecisionEngine
 from data.float_cache import FloatCache
 from data.news_stream import NewsStream
-from agents.algo_analyst import AlgoMarketAnalyst
-from agents.dynamic_watchlist import DynamicWatchlist
+from algo.algo_analyst import AlgoMarketAnalyst
+from algo.dynamic_watchlist import DynamicWatchlist
 from analysis.indicators import IndicatorEngine
 from analysis.market_guard import MarketGuard
 from analysis.screener import Screener

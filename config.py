@@ -83,21 +83,25 @@ EARLY_WINDOW_VOL_RATIO   = 0.6     # Option A: general early-window floor (was 0
 GAP_AND_GO_VOL_RATIO     = 0.5     # Option B: gap stocks floor (gap ≥ 2% + above VWAP)
 GAP_AND_GO_MIN_VOL_PCT   = 2.0     # minimum gap % to qualify for Option B relaxation
 
-# Stop / take-profit defaults (ATR-based)
-DEFAULT_STOP_LOSS_PCT      = 0.012  # minimum 1.2% stop (ATR × ATR_STOP_MULTIPLIER used when larger)
-DEFAULT_TAKE_PROFIT_PCT    = 0.025  # minimum 2.5% take profit
-ATR_STOP_MULTIPLIER        = 1.5    # stop placed at 1.5× ATR from entry
-TRAILING_STOP_TRIGGER_PCT  = 0.006  # fallback when ATR unavailable
-TRAILING_STOP_DISTANCE_PCT = 0.005  # fallback when ATR unavailable
-BREAKEVEN_TRIGGER_PCT      = 0.003  # fallback when ATR unavailable
+# Stop / take-profit defaults (initial bracket order)
+DEFAULT_STOP_LOSS_PCT   = 0.012  # initial stop: 1.2% below entry (or ATR-based if larger)
+DEFAULT_TAKE_PROFIT_PCT = 0.025  # fallback for DB default only — not the active exit
+ATR_STOP_MULTIPLIER     = 1.5   # initial stop placed at 1.5× ATR from entry
 
-# ATR-relative multipliers for breakeven and trailing (preferred over fixed pct above).
-# Breakeven: move stop after gaining ATR_BREAKEVEN_X × ATR (e.g. 0.8× a 1.5%-ATR stock = +1.2%)
-# Trailing trigger: activate after ATR_TRAIL_TRIGGER_X × ATR
-# Trailing distance: stop trails ATR_TRAIL_DISTANCE_X × ATR behind the highest price
-ATR_BREAKEVEN_X     = 0.8   # move to breakeven after +0.8× ATR
-ATR_TRAIL_TRIGGER_X = 1.5   # activate trailing after +1.5× ATR
-ATR_TRAIL_DISTANCE_X = 0.7  # trail 0.7× ATR behind the high
+# Step-trailing stop parameters
+# Phase 1 (breakeven): when price reaches entry + BREAKEVEN_TRIGGER_PCT,
+#   move stop to entry × (1 − BREAKEVEN_STOP_BUFFER) and set trailing=True.
+# Phase 2 (step-trail): each position-management tick, while
+#   current_price ≥ current_stop × (1 + TRAIL_STEP_TRIGGER_PCT),
+#   step the stop up by TRAIL_STEP_SIZE_PCT.  Loop catches large price jumps.
+BREAKEVEN_TRIGGER_PCT  = 0.002  # +0.2% gain triggers the breakeven move
+BREAKEVEN_STOP_BUFFER  = 0.001  # stop set to entry × (1 − 0.001); 0.1% below entry
+TRAIL_STEP_TRIGGER_PCT = 0.003  # stop steps for every +0.3% above the current stop
+TRAIL_STEP_SIZE_PCT    = 0.001  # each step raises the stop by 0.1%
+
+# Safety TP for bracket-order validity — set far above entry so the Alpaca TP leg
+# never fires intraday.  The step-trailing stop is the real exit mechanism.
+BRACKET_TP_SAFETY = 3.0  # TP = entry × 3.0 (200% above entry — unreachable intraday)
 
 # Confidence-scaled position sizing
 # Higher conviction signals get proportionally larger size.
@@ -166,8 +170,8 @@ MARKET_OPEN_HOUR        = 9
 MARKET_OPEN_MIN         = 30   # exchange opens
 STUDY_START_HOUR        = 8    # study begins at 8:30 ET (catches 8:30 macro data)
 STUDY_START_MIN         = 30   # study begins at 8:30 ET
-STUDY_END_HOUR          = 9    # study ends at 9:35 ET
-STUDY_END_MIN           = 35   # trading begins at 9:35 ET
+STUDY_END_HOUR          = 9    # study ends at 9:30 ET
+STUDY_END_MIN           = 30   # trading begins at the open
 MARKET_CLOSE_HOUR       = 15
 MARKET_CLOSE_MIN        = 45   # last entry window closes at 3:45
 
@@ -188,7 +192,7 @@ MIDDAY_SCAN_INTERVAL_MINUTES = 20   # full scan every 20 min during midday low-v
 # Dynamic universe screener
 # Each cycle: fetch top movers + most-actives from Alpaca, merge with WATCHLIST.
 # Falls back gracefully to WATCHLIST if the screener API is unavailable.
-UNIVERSE_MAX_SYMBOLS = 150      # raised from 100 — extra room for discovery slots
+UNIVERSE_MAX_SYMBOLS = 100      # 74 watchlist + 26 discovery; fits in 90s budget
 SCREENER_MIN_PRICE   = 3.0      # filter out sub-$3 micro-cap garbage; spread + dollar-vol guard the rest
 SCREENER_MAX_PRICE   = 500.0    # filter out very expensive illiquid names
 
@@ -197,9 +201,9 @@ SCREENER_MAX_PRICE   = 500.0    # filter out very expensive illiquid names
 # results so all screener slots go to genuine discovery.
 # Each source gets a protected quota so gainers always contributes fresh names
 # even when snapshot and most-actives overlap heavily.
-SCREENER_SNAPSHOT_SLOTS   = 50   # broad market sweep — top N non-watchlist stocks
-SCREENER_ACTIVES_SLOTS    = 30   # real-time volume leaders not already found
-SCREENER_GAINERS_SLOTS    = 20   # catalyst/% movers not already found (SNDK-type plays)
+SCREENER_SNAPSHOT_SLOTS   = 15   # broad market sweep — top N non-watchlist stocks
+SCREENER_ACTIVES_SLOTS    = 7    # real-time volume leaders not already found
+SCREENER_GAINERS_SLOTS    = 4    # catalyst/% movers not already found (SNDK-type plays)
 
 # GFV (good-faith violation) avoidance
 # A GFV occurs when you buy with unsettled proceeds AND sell before those proceeds
@@ -209,7 +213,7 @@ GFV_LOCK_DAYS = 1               # lock GFV-funded positions for 1 business day
 # High-volume trading windows
 # (start_hour, start_min, end_hour, end_min)  — all ET
 HIGH_VOLUME_WINDOWS = [
-    (9, 35, 11, 0),    # Morning momentum: post-open through first hour
+    (9, 30, 11, 0),    # Morning momentum: open through first hour
     (14, 30, 15, 44),  # Afternoon power hour: into the close
 ]
 # Signal score gates — risk management (stops + sizing) is the real protection,

@@ -3,7 +3,7 @@ import time as _time
 import config
 from core.database import log
 
-_POOL_WORKERS = 6   # max concurrent symbol computations
+_POOL_WORKERS = 12  # max concurrent symbol computations
 _LOOP_BUDGET  = 90  # total wall-clock seconds for symbol loop
 
 

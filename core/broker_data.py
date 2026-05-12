@@ -351,42 +351,87 @@ class MarketDataMixin:
         return result
 
     def get_last_filled_sell(self, symbol: str) -> dict | None:
-        """Return fill data for the most recently filled SELL order for this symbol today.
+        """Return fill data for the most recently filled SELL for symbol today.
 
-        Used to capture P&L when Alpaca's bracket stop/TP fires between bot cycles.
+        Bracket stop/TP fills happen on child legs, not the parent order.
+        This function checks three sources in order:
+          1. Closed orders — parent AND nested legs
+          2. Account activities (FILL type) — most reliable for bracket legs
 
         Args:
             symbol: Ticker symbol to check for filled sell orders.
 
         Returns:
-            Dict with keys {fill_price, qty, filled_at}, or None if no filled
-            sell order was found for the symbol today.
+            Dict with keys {fill_price, qty, filled_at}, or None if not found.
         """
+        sym_up      = symbol.upper()
+        today_start = datetime.combine(date.today(), datetime.min.time()).replace(
+            tzinfo=timezone.utc)
+
+        def _extract_fill(o) -> dict | None:
+            if str(getattr(o, "symbol", "")).upper() != sym_up:
+                return None
+            side   = str(getattr(o, "side",            "")).lower()
+            status = str(getattr(o, "status",          "")).lower()
+            fill   = getattr(o, "filled_avg_price", None)
+            qty    = getattr(o, "filled_qty",       None)
+            if "sell" in side and status == "filled" and fill:
+                return {
+                    "fill_price": float(fill),
+                    "qty":        float(qty or 0),
+                    "filled_at":  str(getattr(o, "filled_at", "") or ""),
+                }
+            return None
+
+        # Pass 1: closed orders — check parent orders and all bracket legs
         try:
-            today_start = datetime.combine(date.today(), datetime.min.time()).replace(
-                tzinfo=timezone.utc)
             req = GetOrdersRequest(
                 status=QueryOrderStatus.CLOSED,
                 symbols=[symbol],
-                limit=10,
+                limit=20,
                 after=today_start,
             )
             orders = self._trade_client.get_orders(filter=req)
             for o in orders:
-                side   = str(getattr(o, "side",             "")).lower()
-                status = str(getattr(o, "status",           "")).lower()
-                fill   = getattr(o, "filled_avg_price", None)
-                qty    = getattr(o, "filled_qty",       None)
-                if "sell" in side and status == "filled" and fill:
-                    return {
-                        "fill_price": float(fill),
-                        "qty":        float(qty or 0),
-                        "filled_at":  str(getattr(o, "filled_at", "") or ""),
-                    }
-            return None
+                hit = _extract_fill(o)
+                if hit:
+                    return hit
+                for leg in (getattr(o, "legs", None) or []):
+                    hit = _extract_fill(leg)
+                    if hit:
+                        return hit
         except Exception as e:
-            log.warning("get_last_filled_sell failed for %s: %s", symbol, e)
-            return None
+            log.warning("get_last_filled_sell pass1 failed for %s: %s", symbol, e)
+
+        # Pass 2: account activities — catches bracket leg fills that are not
+        # surfaced at the top level of the orders list
+        try:
+            from alpaca.trading.requests import GetAccountActivitiesRequest
+            from alpaca.trading.enums import ActivityType
+            acts = self._trade_client.get_account_activities(
+                GetAccountActivitiesRequest(
+                    activity_types=[ActivityType.FILL],
+                    date=date.today().isoformat(),
+                )
+            )
+            for act in (acts or []):
+                act_sym   = str(getattr(act, "symbol", "")).upper()
+                act_side  = str(getattr(act, "side",   "")).lower()
+                act_price = getattr(act, "price",      None)
+                act_qty   = getattr(act, "qty",        None)
+                act_ts    = str(getattr(act, "transaction_time", "") or "")
+                if act_sym == sym_up and "sell" in act_side and act_price:
+                    log.info("get_last_filled_sell %s: found via activities fill=%.4f",
+                             symbol, float(act_price))
+                    return {
+                        "fill_price": float(act_price),
+                        "qty":        float(act_qty or 0),
+                        "filled_at":  act_ts,
+                    }
+        except Exception as e:
+            log.warning("get_last_filled_sell pass2 (activities) failed for %s: %s", symbol, e)
+
+        return None
 
     def get_fill_price(self, order_id: str, retries: int = 3, delay: float = 0.5) -> float | None:
         """Poll for the actual fill price of a just-submitted market order.

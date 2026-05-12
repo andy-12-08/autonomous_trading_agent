@@ -29,79 +29,70 @@ class PositionsMixin:
             stop_loss   = db.get("stop_loss",   round(entry_price * (1 - config.DEFAULT_STOP_LOSS_PCT), 2))
             take_profit = db.get("take_profit", round(entry_price * (1 + config.DEFAULT_TAKE_PROFIT_PCT), 2))
             trailing    = bool(db.get("trailing", False))
-            highest     = float(db.get("highest_price") or entry_price)
             stop_updated = False
 
-            # Compute ATR for this position to make breakeven/trailing thresholds
-            # ATR-relative rather than fixed percentages.  A stock with 1.5% ATR
-            # oscillates ±0.5% on a single 5-min bar — fixed 0.3% breakeven would
-            # stop out every good trade on normal noise.
-            _atr = 0.0
-            if entry_price > 0:
-                try:
-                    _df_pos = self.broker.get_bars(symbol, "5Min", days=2)
-                    if _df_pos is not None and not _df_pos.empty:
-                        _df_pos = self.indicators.compute_indicators(_df_pos)
-                        _atr    = float(_df_pos["atr"].iloc[-1]) if not _df_pos.empty else 0.0
-                except Exception:
-                    pass
-
-            _atr_pct        = _atr / entry_price if entry_price > 0 and _atr > 0 else 0.0
-            _be_trigger_pct = max(_atr_pct * config.ATR_BREAKEVEN_X,     config.BREAKEVEN_TRIGGER_PCT)
-            _tr_trigger_pct = max(_atr_pct * config.ATR_TRAIL_TRIGGER_X,  config.TRAILING_STOP_TRIGGER_PCT)
-            _tr_dist_pct    = max(_atr_pct * config.ATR_TRAIL_DISTANCE_X, config.TRAILING_STOP_DISTANCE_PCT)
-
+            # ── Step-trailing stop ────────────────────────────────────────────
+            # Phase 1 (breakeven): price ≥ entry + BREAKEVEN_TRIGGER_PCT →
+            #   stop = entry × (1 − BREAKEVEN_STOP_BUFFER), trailing = True
+            # Phase 2 (step-trail): while price ≥ stop × (1 + TRAIL_STEP_TRIGGER_PCT),
+            #   step stop up by TRAIL_STEP_SIZE_PCT.  Loop catches price jumps.
             _gain_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
 
-            if entry_price > 0 and _gain_pct >= _be_trigger_pct and not trailing:
-                breakeven = round(entry_price * 1.0005, 2)
-                ok, _ = self.risk_manager.approve_stop_update(symbol, breakeven, stop_loss)
-                if ok:
-                    stop_loss = breakeven
-                    self.broker.update_stop_loss(symbol, breakeven)
-                    stop_updated = True
-                    self.database.save_position(symbol, entry_price, qty, stop_loss, take_profit,
-                                  trailing=False, highest_price=current_price)
-                    self.database.record_decision(symbol, "UPDATE_STOP", current_price, qty,
-                                    stop_loss=breakeven,
-                                    reasoning=f"Stop moved to breakeven+buffer at +{_gain_pct:.1%} gain "
-                                              f"(trigger={_be_trigger_pct:.1%}, ATR={_atr_pct:.1%})")
+            if entry_price > 0 and not trailing:
+                if _gain_pct >= config.BREAKEVEN_TRIGGER_PCT:
+                    breakeven_stop = round(entry_price * (1 - config.BREAKEVEN_STOP_BUFFER), 2)
+                    if stop_loss >= breakeven_stop:
+                        # Stop already at or above the breakeven level (e.g. from a prior
+                        # session or manual update) — arm step-trailing without moving stop down.
+                        trailing = True
+                        self.database.save_position(
+                            symbol, entry_price, qty, stop_loss, take_profit,
+                            trailing=True, highest_price=current_price)
+                        log.info("Breakeven already protected %s: SL=%.2f ≥ BE=%.2f — arming step-trail",
+                                 symbol, stop_loss, breakeven_stop)
+                    else:
+                        ok, _ = self.risk_manager.approve_stop_update(symbol, breakeven_stop, stop_loss)
+                        if ok:
+                            stop_loss = breakeven_stop
+                            trailing  = True
+                            self.broker.update_stop_loss(symbol, breakeven_stop)
+                            stop_updated = True
+                            self.database.save_position(
+                                symbol, entry_price, qty, stop_loss, take_profit,
+                                trailing=True, highest_price=current_price)
+                            self.database.record_decision(
+                                symbol, "UPDATE_STOP", current_price, qty,
+                                stop_loss=breakeven_stop,
+                                reasoning=(
+                                    f"Breakeven: price +{_gain_pct:.1%} ≥ "
+                                    f"{config.BREAKEVEN_TRIGGER_PCT:.1%} trigger "
+                                    f"→ stop {breakeven_stop:.2f} "
+                                    f"(entry−{config.BREAKEVEN_STOP_BUFFER:.1%})"
+                                ))
 
-            elif entry_price > 0 and _gain_pct >= _tr_trigger_pct and not trailing:
-                new_stop = round(current_price * (1 - _tr_dist_pct), 2)
-                ok, _ = self.risk_manager.approve_stop_update(symbol, new_stop, stop_loss)
-                if ok:
-                    stop_loss = new_stop
-                    trailing  = True
-                    self.broker.update_stop_loss(symbol, new_stop)
-                    stop_updated = True
-                    self.database.save_position(symbol, entry_price, qty, stop_loss, take_profit,
-                                  trailing=True, highest_price=current_price)
-                    self.database.record_decision(symbol, "UPDATE_STOP", current_price, qty,
-                                    stop_loss=new_stop,
-                                    reasoning=f"Trailing stop activated at +{_gain_pct:.1%} gain "
-                                              f"(trigger={_tr_trigger_pct:.1%}, dist={_tr_dist_pct:.1%})")
-
-            if trailing and current_price > highest:
-                new_stop = round(current_price * (1 - _tr_dist_pct), 2)
-                ok, _ = self.risk_manager.approve_stop_update(symbol, new_stop, stop_loss)
-                if ok:
-                    stop_loss = new_stop
-                    self.broker.update_stop_loss(symbol, new_stop)
-                    stop_updated = True
-                    self.database.save_position(symbol, entry_price, qty, stop_loss, take_profit,
-                                  trailing=True, highest_price=current_price)
-
-            if take_profit > 0 and current_price > take_profit * 1.005:
-                tp_range = take_profit - entry_price
-                new_tp   = round(current_price + tp_range * 0.5, 2)
-                if new_tp > take_profit:
-                    take_profit = new_tp
-                    self.database.save_position(symbol, entry_price, qty, stop_loss, take_profit,
-                                  trailing=trailing, highest_price=current_price)
-                    self.database.record_decision(symbol, "UPDATE_STOP", current_price, qty,
-                                    stop_loss=stop_loss,
-                                    reasoning=f"Ratcheting TP: price exceeded old target — new TP={new_tp:.2f}")
+            elif trailing:
+                new_stop = stop_loss
+                steps    = 0
+                while current_price >= new_stop * (1 + config.TRAIL_STEP_TRIGGER_PCT):
+                    new_stop = round(new_stop * (1 + config.TRAIL_STEP_SIZE_PCT), 2)
+                    steps   += 1
+                if steps > 0:
+                    ok, _ = self.risk_manager.approve_stop_update(symbol, new_stop, stop_loss)
+                    if ok:
+                        stop_loss = new_stop
+                        self.broker.update_stop_loss(symbol, new_stop)
+                        stop_updated = True
+                        self.database.save_position(
+                            symbol, entry_price, qty, stop_loss, take_profit,
+                            trailing=True, highest_price=current_price)
+                        self.database.record_decision(
+                            symbol, "UPDATE_STOP", current_price, qty,
+                            stop_loss=new_stop,
+                            reasoning=(
+                                f"Step-trail: {steps} step(s) → stop {new_stop:.2f} "
+                                f"(price={current_price:.2f}, "
+                                f"step={config.TRAIL_STEP_SIZE_PCT:.1%})"
+                            ))
 
             if not stop_updated and not self.broker.has_active_stop_order(symbol, open_orders):
                 log.warning("No active stop order found for %s — resubmitting SL=%.2f",
@@ -426,11 +417,9 @@ class PositionsMixin:
         if self._force_run:
             log.info("POSITION MGMT: force mode — bypassing market-hours gates")
         else:
-            in_premarket_study = self.is_in_study_window(hour, minute)
-            if not self.broker.is_market_open() and not in_premarket_study:
-                log.info("Market closed — skipping cycle")
-                return
-
+            # EOD check runs BEFORE the market-open gate so it fires even when
+            # Alpaca marks the session closed (which happens at 4:00 PM, after our
+            # 3:45 PM close window, and also when the bot restarts late in the day).
             if (hour == config.MARKET_CLOSE_HOUR and minute >= config.MARKET_CLOSE_MIN) or \
                hour > config.MARKET_CLOSE_HOUR:
                 if not self._eod_done:
@@ -446,6 +435,11 @@ class PositionsMixin:
                         log.error("EOD summary failed: %s", exc)
                 else:
                     log.info("EOD already completed for today — skipping cycle")
+                return
+
+            in_premarket_study = self.is_in_study_window(hour, minute)
+            if not self.broker.is_market_open() and not in_premarket_study:
+                log.info("Market closed — skipping cycle")
                 return
 
             cur_min     = hour * 60 + minute
