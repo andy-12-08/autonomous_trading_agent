@@ -1,108 +1,113 @@
+"""
+Dependency wiring: constructs every component and assembles the TradingOrchestrator.
+
+Component dependency graph (simplified):
+  Database ← everything
+  AlpacaBroker (+ OptionsOrdersMixin) ← executor, positions, scanner
+  IVAnalyzer ← OptionsDecisionEngine, executor, positions
+  GreeksEngine ← executor, positions (stateless — passed as a class reference)
+  OptionsStrategySelector ← OptionsDecisionEngine
+  OptionsDecisionEngine ← TradingOrchestrator
+  OptionsRiskManager ← executor (stateless — passed as a class reference)
+  MarketGuard ← orchestrator, trade cycle
+  OptionsFlowClient ← trade cycle enrichment, IVAnalyzer
+  TradingOrchestrator ← main.py scheduler
+"""
+
 import config
-from algo.algo_decisions import AlgoDecisionEngine
-from data.float_cache import FloatCache
-from data.news_stream import NewsStream
 from algo.algo_analyst import AlgoMarketAnalyst
+from algo.algo_decisions import OptionsDecisionEngine
 from algo.dynamic_watchlist import DynamicWatchlist
+from analysis.greeks_engine import GreeksEngine
 from analysis.indicators import IndicatorEngine
 from analysis.market_guard import MarketGuard
+from analysis.options_strategy_selector import OptionsStrategySelector
 from analysis.screener import Screener
 from analysis.signal_scorer import SignalScorer
 from core.broker import AlpacaBroker
 from core.database import Database
 from data.dark_pool import DarkPoolClient
 from data.edgar import EdgarClient
-from data.insider_flow import InsiderFlowClient
+from data.iv_analyzer import IVAnalyzer
 from data.options_flow import OptionsFlowClient
 from data.pre_market import PreMarketAnalyzer
-from data.short_interest import ShortInterestClient
 from data.yield_curve import YieldCurveClient
-from risk.bucket_manager import BucketManager
-from risk.expectancy import ExpectancyEngine
-from risk.gfv_tracker import GFVTracker
-from risk.manager import RiskManager
+from risk.options_risk import OptionsRiskManager
 from trading.notifier import Notifier
 from trading.orchestrator import TradingOrchestrator
-from trading.session_overrides import SessionOverrides
-from utils.backtester import Backtester
 
 
-def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Backtester]:
-    """Construct broker, data clients, risk engines, orchestrator, and weekly backtester.
-
-    Starts the optional real-time news stream and attaches it to the broker. Calls
-    reset_daily_state on the orchestrator and enables dry-run mode when requested.
+def build_trading_stack(dry_run: bool = False) -> TradingOrchestrator:
+    """
+    Construct and wire every component of the options trading stack.
 
     Args:
-        dry_run: When True, the orchestrator logs decisions but does not place orders.
+        dry_run: When True, the orchestrator logs decisions but places no real orders.
 
     Returns:
-        A tuple of the configured TradingOrchestrator and Backtester instances.
+        A fully configured TradingOrchestrator ready to be attached to the scheduler.
     """
+    # ── Persistence ───────────────────────────────────────────────────────────
     db = Database(config.DB_PATH)
     db.init_db()
 
+    # ── Broker (also OptionsOrdersMixin via broker.py) ────────────────────────
     broker = AlpacaBroker()
-    risk_manager = RiskManager()
-    gfv_tracker = GFVTracker(config.DB_PATH)
-    bucket_manager = BucketManager()
-    expectancy_engine = ExpectancyEngine(config.DB_PATH)
-    options_flow = OptionsFlowClient()
-    insider_flow = InsiderFlowClient()
-    dark_pool = DarkPoolClient()
-    pre_market = PreMarketAnalyzer()
-    yield_curve = YieldCurveClient()
-    short_interest = ShortInterestClient()
-    edgar = EdgarClient()
-    indicators = IndicatorEngine()
-    signal_scorer = SignalScorer()
-    screener = Screener(broker)
-    market_guard = MarketGuard(broker, indicators)
-    algo_engine = AlgoDecisionEngine()
+
+    # ── Market data and analysis ───────────────────────────────────────────────
+    indicators        = IndicatorEngine()
+    signal_scorer     = SignalScorer()
+    screener          = Screener(broker)
+    market_guard      = MarketGuard(broker, indicators)
+
+    # ── Options-specific components ────────────────────────────────────────────
+    options_flow      = OptionsFlowClient()
+    iv_analyzer       = IVAnalyzer()
+    greeks_engine     = GreeksEngine()          # stateless; used via class methods
+    strategy_selector = OptionsStrategySelector()
+    options_risk      = OptionsRiskManager()    # stateless; used via static methods
+    algo_engine       = OptionsDecisionEngine()
+
+    # ── Alt-data and macro ─────────────────────────────────────────────────────
+    dark_pool         = DarkPoolClient()
+    pre_market        = PreMarketAnalyzer()
+    yield_curve       = YieldCurveClient()
+    edgar             = EdgarClient()
+
+    # ── Session utilities ──────────────────────────────────────────────────────
     dynamic_watchlist = DynamicWatchlist()
-    float_cache = FloatCache()
-    session_overrides = SessionOverrides(config)
-    notifier = Notifier(config, config.DB_PATH, expectancy_engine)
-    market_analyst = AlgoMarketAnalyst(
-        broker, indicators, pre_market, yield_curve, short_interest, dynamic_watchlist
-    )
-    backtester = Backtester(broker, indicators, signal_scorer)
+    notifier          = Notifier(config, config.DB_PATH)
 
+    # ── Morning study ──────────────────────────────────────────────────────────
+    market_analyst    = AlgoMarketAnalyst(
+        broker, indicators, pre_market, yield_curve, None, dynamic_watchlist
+    )
+
+    # ── Orchestrator ───────────────────────────────────────────────────────────
     orchestrator = TradingOrchestrator(
-        broker=broker,
-        indicators=indicators,
-        risk_manager=risk_manager,
-        bucket_manager=bucket_manager,
-        gfv_tracker=gfv_tracker,
-        signal_scorer=signal_scorer,
-        expectancy_engine=expectancy_engine,
-        options_flow=options_flow,
-        insider_flow=insider_flow,
-        dark_pool=dark_pool,
-        pre_market=pre_market,
-        yield_curve=yield_curve,
-        short_interest=short_interest,
-        edgar=edgar,
-        algo_engine=algo_engine,
-        market_analyst=market_analyst,
-        market_guard=market_guard,
-        notifier=notifier,
-        screener=screener,
-        dynamic_watchlist=dynamic_watchlist,
-        float_cache=float_cache,
-        session_overrides=session_overrides,
-        database=db,
+        broker            = broker,
+        iv_analyzer       = iv_analyzer,
+        options_flow      = options_flow,
+        options_risk      = options_risk,
+        greeks_engine     = greeks_engine,
+        strategy_selector = strategy_selector,
+        algo_engine       = algo_engine,
+        market_guard      = market_guard,
+        market_analyst    = market_analyst,
+        screener          = screener,
+        dark_pool         = dark_pool,
+        pre_market        = pre_market,
+        yield_curve       = yield_curve,
+        edgar             = edgar,
+        notifier          = notifier,
+        database          = db,
+        dynamic_watchlist = dynamic_watchlist,
+        signal_scorer     = signal_scorer,
     )
-
-    # Pre-warm float cache for the full watchlist (avoids first-scan slowness)
-    float_cache.prefetch_floats(config.WATCHLIST, max_workers=8)
-
-    news_stream = NewsStream()
-    news_stream.start()
-    broker._news_stream = news_stream
 
     orchestrator.reset_daily_state()
+
     if dry_run:
         orchestrator.set_dry_run(True)
 
-    return orchestrator, backtester
+    return orchestrator

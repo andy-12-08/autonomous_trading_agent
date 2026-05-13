@@ -1,509 +1,538 @@
+"""
+Options position manager: monitors every open options position every two minutes,
+applies mechanically-enforced exit rules, and handles EOD flattening.
+
+Exit rule priority (in order of check):
+  1. EOD gate        — 3:45 PM ET → close everything
+  2. DTE exit        — ≤ 7 DTE for credit / ≤ 3 DTE for debit
+  3. 50% profit rule — Tastytrade-validated; locks in gains before gamma accelerates
+  4. 200% stop rule  — credit strategies: current mark ≥ 3× credit received
+  5. Delta emergency — short leg delta > 0.75 (deeply ITM → run, don't walk)
+  6. Daily drawdown  — effective P&L ≤ −DAILY_DRAWDOWN_LIMIT → flatten all
+
+This module does NOT contain entry logic; that lives in executor.py.
+"""
+
+from __future__ import annotations
+
 from datetime import date, datetime, timezone
+from typing import Optional
+
 import config
+from analysis.greeks_engine import GreeksEngine
+from analysis.options_strategy_selector import (
+    CREDIT_PUT_SPREAD, CREDIT_CALL_SPREAD, IRON_CONDOR,
+    DEBIT_CALL_SPREAD, DEBIT_PUT_SPREAD,
+    ZERO_DTE_CALL, ZERO_DTE_PUT,
+)
 from core.database import log
+from risk.options_risk import OptionsRiskManager
 
 
-class PositionsMixin:
-    """Two-minute job: reconcile broker and DB, manage stops, exits, and study phase."""
+class OptionsPositionsMixin:
+    """
+    Two-minute scheduler job: monitor options positions and enforce exit rules.
 
-    def build_positions_snapshot(self) -> list[dict]:
-        """Reconcile Alpaca positions with SQLite, update stops and targets, prune closed rows.
+    Expects these attributes on `self` (set by TradingOrchestrator):
+      broker, database, notifier, iv_analyzer, _daily_pnl,
+      _ET, _state_lock, _broker_lock, _eod_done
+    """
 
-        Returns:
-            List of one dict per open position with prices, sizing, stops, GFV flags,
-            entry_ts, partial_taken, and setup_type fields for downstream logic.
+    def monitor_options_positions(self) -> None:
         """
-        broker_positions = self.broker.get_positions()
-        db_positions     = {p["symbol"]: p for p in self.database.get_open_positions_db()}
-        open_orders      = self.broker.get_open_orders()
-        snapshot         = []
-
-        for symbol, pos in broker_positions.items():
-            current_price = float(pos.current_price   or 0)
-            entry_price   = float(pos.avg_entry_price or 0)
-            qty           = float(pos.qty             or 0)
-            pnl           = float(pos.unrealized_pl   or 0)
-            pnl_pct       = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
-
-            db          = db_positions.get(symbol, {})
-            stop_loss   = db.get("stop_loss",   round(entry_price * (1 - config.DEFAULT_STOP_LOSS_PCT), 2))
-            take_profit = db.get("take_profit", round(entry_price * (1 + config.DEFAULT_TAKE_PROFIT_PCT), 2))
-            trailing    = bool(db.get("trailing", False))
-            stop_updated = False
-
-            # ── Step-trailing stop ────────────────────────────────────────────
-            # Phase 1 (breakeven): price ≥ entry + BREAKEVEN_TRIGGER_PCT →
-            #   stop = entry × (1 − BREAKEVEN_STOP_BUFFER), trailing = True
-            # Phase 2 (step-trail): while price ≥ stop × (1 + TRAIL_STEP_TRIGGER_PCT),
-            #   step stop up by TRAIL_STEP_SIZE_PCT.  Loop catches price jumps.
-            _gain_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
-
-            if entry_price > 0 and not trailing:
-                if _gain_pct >= config.BREAKEVEN_TRIGGER_PCT:
-                    breakeven_stop = round(entry_price * (1 - config.BREAKEVEN_STOP_BUFFER), 2)
-                    if stop_loss >= breakeven_stop:
-                        # Stop already at or above the breakeven level (e.g. from a prior
-                        # session or manual update) — arm step-trailing without moving stop down.
-                        trailing = True
-                        self.database.save_position(
-                            symbol, entry_price, qty, stop_loss, take_profit,
-                            trailing=True, highest_price=current_price)
-                        log.info("Breakeven already protected %s: SL=%.2f ≥ BE=%.2f — arming step-trail",
-                                 symbol, stop_loss, breakeven_stop)
-                    else:
-                        ok, _ = self.risk_manager.approve_stop_update(symbol, breakeven_stop, stop_loss)
-                        if ok:
-                            stop_loss = breakeven_stop
-                            trailing  = True
-                            self.broker.update_stop_loss(symbol, breakeven_stop)
-                            stop_updated = True
-                            self.database.save_position(
-                                symbol, entry_price, qty, stop_loss, take_profit,
-                                trailing=True, highest_price=current_price)
-                            self.database.record_decision(
-                                symbol, "UPDATE_STOP", current_price, qty,
-                                stop_loss=breakeven_stop,
-                                reasoning=(
-                                    f"Breakeven: price +{_gain_pct:.1%} ≥ "
-                                    f"{config.BREAKEVEN_TRIGGER_PCT:.1%} trigger "
-                                    f"→ stop {breakeven_stop:.2f} "
-                                    f"(entry−{config.BREAKEVEN_STOP_BUFFER:.1%})"
-                                ))
-
-            elif trailing:
-                new_stop = stop_loss
-                steps    = 0
-                while current_price >= new_stop * (1 + config.TRAIL_STEP_TRIGGER_PCT):
-                    new_stop = round(new_stop * (1 + config.TRAIL_STEP_SIZE_PCT), 2)
-                    steps   += 1
-                if steps > 0:
-                    ok, _ = self.risk_manager.approve_stop_update(symbol, new_stop, stop_loss)
-                    if ok:
-                        stop_loss = new_stop
-                        self.broker.update_stop_loss(symbol, new_stop)
-                        stop_updated = True
-                        self.database.save_position(
-                            symbol, entry_price, qty, stop_loss, take_profit,
-                            trailing=True, highest_price=current_price)
-                        self.database.record_decision(
-                            symbol, "UPDATE_STOP", current_price, qty,
-                            stop_loss=new_stop,
-                            reasoning=(
-                                f"Step-trail: {steps} step(s) → stop {new_stop:.2f} "
-                                f"(price={current_price:.2f}, "
-                                f"step={config.TRAIL_STEP_SIZE_PCT:.1%})"
-                            ))
-
-            if not stop_updated and not self.broker.has_active_stop_order(symbol, open_orders):
-                log.warning("No active stop order found for %s — resubmitting SL=%.2f",
-                            symbol, stop_loss)
-                self.broker.update_stop_loss(symbol, stop_loss)
-
-            gfv_locked, gfv_reason = self.gfv_tracker.is_gfv_locked(symbol)
-            snapshot.append({
-                "symbol":        symbol,
-                "bucket":        config.SYMBOL_BUCKET.get(symbol, "unknown"),
-                "entry_price":   round(entry_price, 4),
-                "current_price": round(current_price, 4),
-                "qty":           qty,
-                "stop_loss":     round(stop_loss, 4),
-                "take_profit":   round(take_profit, 4),
-                "pnl":           round(pnl, 2),
-                "pnl_pct":       round(pnl_pct, 2),
-                "trailing":      trailing,
-                "gfv_locked":    gfv_locked,
-                "gfv_reason":    gfv_reason,
-                "entry_ts":      db.get("entry_ts", ""),
-                "partial_taken": bool(db.get("partial_taken", False)),
-                "setup_type":    db.get("setup_type"),
-            })
-
-        for symbol in list(db_positions.keys()):
-            if symbol not in broker_positions:
-                self._capture_bracket_exit(symbol, db_positions[symbol])
-
-        return snapshot
-
-    def _capture_bracket_exit(self, symbol: str, db_pos: dict) -> None:
-        """Record P and L and DB cleanup when a bracket exit happens between scheduler ticks.
-
-        Args:
-            symbol: Ticker that disappeared from the broker position list.
-            db_pos: Last known SQLite row for that symbol.
-
-        Returns:
-            None.
-        """
-        entry_price = float(db_pos.get("entry_price", 0) or 0)
-        qty         = float(db_pos.get("qty",         0) or 0)
-        setup_type  = db_pos.get("setup_type")
-
-        try:
-            _bracket_equity = float(self.broker.get_account().equity or config.ACCOUNT_SIZE)
-        except Exception:
-            _bracket_equity = config.ACCOUNT_SIZE
-
-        fill = self.broker.get_last_filled_sell(symbol)
-        if fill and fill["fill_price"]:
-            fill_price = fill["fill_price"]
-            pnl        = (fill_price - entry_price) * qty if entry_price else 0
-            outcome    = "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven"
-            self.database.record_decision(
-                symbol, "SELL", price=fill_price, qty=qty, pnl=pnl,
-                setup_type=setup_type,
-                reasoning="Bracket order triggered (stop-loss or take-profit hit by Alpaca)")
-            self.database.update_outcome(symbol, outcome, pnl)
-            with self._state_lock:
-                self._daily_pnl += pnl
-            log.info("Bracket exit captured: %s | fill=%.2f entry=%.2f qty=%.0f pnl=%+.2f [%s]",
-                     symbol, fill_price, entry_price, qty, pnl, outcome)
-            self.notifier.send_trade_alert(
-                action="SELL", symbol=symbol, price=fill_price, qty=qty,
-                equity=_bracket_equity, daily_pnl=self._daily_pnl,
-                pnl=pnl, setup_type=setup_type,
-                reason=f"Bracket exit [{outcome}] — stop-loss or take-profit triggered by Alpaca")
-        else:
-            log.warning("Bracket exit for %s: fill data unavailable — recording without P&L", symbol)
-            self.database.record_decision(
-                symbol, "SELL", price=entry_price, qty=qty,
-                setup_type=setup_type,
-                reasoning="Bracket order triggered — fill data unavailable")
-            self.notifier.send_trade_alert(
-                action="SELL", symbol=symbol, price=entry_price, qty=qty,
-                equity=_bracket_equity, daily_pnl=self._daily_pnl,
-                pnl=None, setup_type=setup_type,
-                reason="Bracket exit — stop-loss or take-profit triggered by Alpaca (fill data unavailable)")
-
-        self.database.remove_position(symbol)
-        self.gfv_tracker.remove_buy(symbol)
-
-    def check_time_stops(self, positions_snapshot: list[dict]) -> list[str]:
-        """Return symbols that exceeded the configured time stop without enough TP progress.
-
-        Args:
-            positions_snapshot: Rows from build_positions_snapshot including entry_ts.
-
-        Returns:
-            List of ticker strings that should receive a time-stop exit order.
-        """
-        now     = datetime.now(self._ET)
-        to_exit = []
-
-        for pos in positions_snapshot:
-            entry_ts_str = pos.get("entry_ts", "")
-            if not entry_ts_str:
-                continue
-            try:
-                entry_dt = datetime.fromisoformat(entry_ts_str)
-                if entry_dt.tzinfo is None:
-                    entry_dt = entry_dt.replace(tzinfo=timezone.utc)
-            except Exception:
-                continue
-
-            age_minutes = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 60
-            if age_minutes < config.TIME_STOP_MINUTES:
-                continue
-
-            entry    = pos["entry_price"]
-            tp       = pos["take_profit"]
-            current  = pos["current_price"]
-            tp_range = tp - entry
-            if tp_range <= 0:
-                continue
-
-            progress = (current - entry) / tp_range
-            if progress < config.TIME_STOP_PROGRESS_PCT:
-                log.warning(
-                    "TIME STOP: %s open %.0f min, progress=%.0f%% < %.0f%% target — exiting",
-                    pos["symbol"], age_minutes,
-                    progress * 100, config.TIME_STOP_PROGRESS_PCT * 100)
-                to_exit.append(pos["symbol"])
-
-        return to_exit
-
-    def check_partial_profits(self, positions_snapshot: list[dict]) -> list[str]:
-        """Return symbols eligible for an automatic half-size take-profit per config rules.
-
-        Args:
-            positions_snapshot: Rows from build_positions_snapshot; skips partial_taken.
-
-        Returns:
-            List of tickers to scale out when price has covered enough of the TP range.
-        """
-        to_partial = []
-        for pos in positions_snapshot:
-            if pos.get("partial_taken"):
-                continue
-            entry    = pos["entry_price"]
-            tp       = pos["take_profit"]
-            current  = pos["current_price"]
-            tp_range = tp - entry
-            if tp_range <= 0:
-                continue
-            progress = (current - entry) / tp_range
-            if progress >= config.PARTIAL_PROFIT_TRIGGER_PCT:
-                log.info(
-                    "PARTIAL PROFIT: %s at %.0f%% of take-profit range — selling 50%%",
-                    pos["symbol"], progress * 100)
-                to_partial.append(pos["symbol"])
-        return to_partial
-
-    def _run_study_phase(self, hour: int, minute: int, account_ctx: dict) -> bool:
-        """Run or load the morning study during the configured pre-open window.
-
-        Args:
-            hour: Current Eastern Time hour.
-            minute: Current Eastern Time minute.
-            account_ctx: Account summary dict passed into the analyst.
-
-        Returns:
-            True when the caller should stop the rest of this position-management tick.
-        """
-        in_study_window = self.is_in_study_window(hour, minute)
-
-        if in_study_window and not self._study_complete:
-            log.info("MORNING STUDY WINDOW (%02d:%02d) — studying market, no trades yet", hour, minute)
-            cached = self.market_analyst.load_todays_plan()
-            if cached:
-                self._daily_plan    = cached
-                self._study_complete = True
-                log.info("Loaded cached daily plan from DB")
-            else:
-                self._daily_plan    = self.market_analyst.run_morning_study(account_ctx)
-                self._study_complete = True
-            self.session_overrides.apply(self._daily_plan)
-            log.info("Session overrides: %s", self.session_overrides.summary())
-            log.info("Pre-warming screener universe cache...")
-            self.screener.build_universe()
-            log.info("Pre-loading FINRA dark pool data (yesterday's file)...")
-            self.dark_pool.load_dark_pool_data()
-            log.info("Pre-loading yield curve data...")
-            self.yield_curve.get_yield_curve()
-            log.info("Pre-loading pre-market levels for watchlist...")
-            self.pre_market.get_premarket_data(config.WATCHLIST)
-            log.info("All caches ready — first cycle will use cached data")
-            return True
-
-        if in_study_window:
-            log.info("Morning study done — waiting for %02d:%02d ET to begin trading",
-                     config.STUDY_END_HOUR, config.STUDY_END_MIN)
-            return True
-
-        if not self._study_complete:
-            cached = self.market_analyst.load_todays_plan()
-            if cached:
-                self._daily_plan    = cached
-                self._study_complete = True
-                log.info("Loaded cached daily plan (late start)")
-            else:
-                log.info("Running morning study (late start — %02d:%02d)", hour, minute)
-                self._daily_plan    = self.market_analyst.run_morning_study(account_ctx)
-                self._study_complete = True
-            self.session_overrides.apply(self._daily_plan)
-            log.info("Session overrides: %s", self.session_overrides.summary())
-
-        return False
-
-    def _execute_time_stop_exits(self, positions_snapshot: list[dict], equity: float) -> None:
-        """Place market sells for symbols returned by check_time_stops when GFV allows.
-
-        Args:
-            positions_snapshot: Snapshot used to size each exit.
-            equity: Current account equity for alerts.
-
-        Returns:
-            None.
-        """
-        time_stop_exits = self.check_time_stops(positions_snapshot)
-        for sym in time_stop_exits:
-            gfv_safe, gfv_reason = self.gfv_tracker.gfv_safe_to_sell(sym)
-            pos_data = next((p for p in positions_snapshot if p["symbol"] == sym), {})
-            qty      = float(pos_data.get("qty", 0))
-            pnl      = float(pos_data.get("pnl", 0))
-            if not gfv_safe:
-                log.warning("Time stop blocked by GFV for %s: %s", sym, gfv_reason)
-                continue
-            if not self.broker.close_position(sym):
-                continue
-            with self._state_lock:
-                self._daily_pnl += pnl
-            self.database.record_decision(
-                sym, "SELL", pos_data.get("current_price"), qty,
-                pnl=pnl, setup_type=pos_data.get("setup_type"),
-                reasoning=(f"Time stop: position aged > {config.TIME_STOP_MINUTES}min "
-                           f"without reaching {config.TIME_STOP_PROGRESS_PCT:.0%} of target"))
-            self.database.remove_position(sym)
-            self.gfv_tracker.remove_buy(sym)
-            self.database.update_outcome(
-                sym, "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven", pnl)
-            self.notifier.send_trade_alert(
-                action="SELL", symbol=sym,
-                price=float(pos_data.get("current_price") or 0), qty=qty,
-                equity=equity, daily_pnl=self._daily_pnl,
-                deployed=self._deployed_today,
-                positions_open=len(positions_snapshot) - 1,
-                pnl=pnl, setup_type="time_stop",
-                reason=f"Time stop: open >{config.TIME_STOP_MINUTES}min "
-                       f"without {config.TIME_STOP_PROGRESS_PCT:.0%} progress")
-
-    def _execute_partial_profit_exits(self, positions_snapshot: list[dict], equity: float) -> None:
-        """Sell half of each eligible position (skips single-share lines) when GFV allows.
-
-        Args:
-            positions_snapshot: Snapshot used for sizing and follow-up saves.
-            equity: Current account equity for alerts.
-
-        Returns:
-            None.
-        """
-        partial_symbols = self.check_partial_profits(positions_snapshot)
-        for sym in partial_symbols:
-            gfv_safe, gfv_reason = self.gfv_tracker.gfv_safe_to_sell(sym)
-            pos_data = next((p for p in positions_snapshot if p["symbol"] == sym), {})
-            qty = float(pos_data.get("qty", 0))
-            if qty < 2:
-                log.info("Partial profit skipped for %s — only %.0f share(s), cannot split", sym, qty)
-                continue
-            half_qty = int(qty // 2)
-            pnl      = float(pos_data.get("pnl", 0)) * (half_qty / qty)
-            if not gfv_safe:
-                log.info("Partial profit blocked by GFV for %s: %s", sym, gfv_reason)
-                continue
-            self.broker.cancel_orders_for_symbol(sym)
-            order = self.broker.place_market_order(sym, half_qty, "SELL")
-            if not order:
-                continue
-            with self._state_lock:
-                self._daily_pnl += pnl
-            self.database.record_decision(
-                sym, "PARTIAL_SELL", pos_data.get("current_price"), half_qty, pnl=pnl,
-                reasoning=(f"Auto partial profit: reached {config.PARTIAL_PROFIT_TRIGGER_PCT:.0%} "
-                           f"of take-profit range — scaling out 50%"))
-            orig_tp   = float(pos_data.get("take_profit", 0))
-            entry     = float(pos_data.get("entry_price", 0))
-            runner_tp = round(entry + (orig_tp - entry) * 1.5, 2) if orig_tp > entry > 0 else orig_tp
-            self.database.save_position(
-                sym, pos_data["entry_price"], qty - half_qty,
-                pos_data["stop_loss"], runner_tp,
-                trailing=pos_data.get("trailing", False),
-                highest_price=pos_data.get("current_price"),
-                partial_taken=True, entry_ts=pos_data.get("entry_ts", ""))
-            if runner_tp != orig_tp:
-                log.info("Runner TP extended: %s orig=%.2f → runner=%.2f", sym, orig_tp, runner_tp)
-            self.notifier.send_trade_alert(
-                action="PARTIAL_SELL", symbol=sym,
-                price=float(pos_data.get("current_price") or 0), qty=half_qty,
-                equity=equity, daily_pnl=self._daily_pnl,
-                deployed=self._deployed_today,
-                positions_open=len(positions_snapshot),
-                pnl=pnl, setup_type="auto_partial_profit",
-                reason=f"Auto scale-out: reached {config.PARTIAL_PROFIT_TRIGGER_PCT:.0%} of take-profit range")
-
-    def run_position_management(self):
-        """Scheduler entry: study window, EOD flattening, then intraday position upkeep.
+        Main 2-minute scheduler entry: check all open positions against exit rules.
 
         Returns:
             None.
         """
         now   = datetime.now(self._ET)
-        log.info("====[ POSITION MANAGEMENT | %s ]====", now.strftime("%H:%M:%S"))
+        hour  = now.hour
+        minute = now.minute
 
-        today = datetime.now(self._ET).date().isoformat()
-        if today != self._session_date:
-            self.reset_daily_state()
+        log.info("====[ OPTIONS POSITION MONITOR | %s ]====", now.strftime("%H:%M:%S"))
 
-        hour, minute = now.hour, now.minute
+        # EOD gate: flatten all options positions at configured close time
+        close_min = config.MARKET_CLOSE_HOUR * 60 + config.MARKET_CLOSE_MIN
+        cur_min   = hour * 60 + minute
 
-        if self._force_run:
-            log.info("POSITION MGMT: force mode — bypassing market-hours gates")
-        else:
-            # EOD check runs BEFORE the market-open gate so it fires even when
-            # Alpaca marks the session closed (which happens at 4:00 PM, after our
-            # 3:45 PM close window, and also when the bot restarts late in the day).
-            if (hour == config.MARKET_CLOSE_HOUR and minute >= config.MARKET_CLOSE_MIN) or \
-               hour > config.MARKET_CLOSE_HOUR:
-                if not self._eod_done:
-                    try:
-                        self.eod_close_all()
-                        self._eod_done = True
-                    except Exception as exc:
-                        log.error("EOD close failed: %s — will retry on next tick", exc)
-                        return
-                    try:
-                        self.write_daily_summary()
-                    except Exception as exc:
-                        log.error("EOD summary failed: %s", exc)
-                else:
-                    log.info("EOD already completed for today — skipping cycle")
-                return
-
-            in_premarket_study = self.is_in_study_window(hour, minute)
-            if not self.broker.is_market_open() and not in_premarket_study:
-                log.info("Market closed — skipping cycle")
-                return
-
-            cur_min     = hour * 60 + minute
-            study_start = config.STUDY_START_HOUR * 60 + config.STUDY_START_MIN
-            if cur_min < study_start:
-                log.info("Pre-market — waiting for study window (%02d:%02d ET)",
-                         config.STUDY_START_HOUR, config.STUDY_START_MIN)
-                return
-
-        broker_acct  = self.broker.get_account()
-        equity       = float(getattr(broker_acct, "equity", None) or config.ACCOUNT_SIZE)
-        raw_settled  = float(getattr(broker_acct, "non_marginable_buying_power", None)
-                             or getattr(broker_acct, "cash", None) or equity)
-        settled_cash = self.gfv_tracker.get_available_settled_cash(raw_settled, self._deployed_today)
-        exposure_pct = round(self._deployed_today / equity * 100, 1) if equity else 0
-
-        account_ctx = {
-            "settled_cash":         round(settled_cash, 2),
-            "total_equity":         round(equity, 2),
-            "daily_pnl_realized":   round(self._daily_pnl, 2),
-            "daily_pnl_unrealized": 0.0,
-            "daily_pnl_effective":  0.0,
-            "daily_pnl_pct":        0.0,
-            "deployed_today":       round(self._deployed_today, 2),
-            "total_exposure_pct":   exposure_pct,
-            "available_today":      round(max(0, config.MAX_DAILY_CAPITAL - self._deployed_today), 2),
-            "open_positions":       len(self.broker.get_positions()),
-            "trades_today":         self._trades_today,
-            "trades_remaining":     max(0, config.MAX_TRADES_PER_DAY - self._trades_today),
-            "drawdown_limit":       config.DAILY_DRAWDOWN_LIMIT,
-            "exposure_cap_pct":     int(config.MAX_TOTAL_EXPOSURE_PCT * 100),
-            "max_daily_capital":    config.MAX_DAILY_CAPITAL,
-        }
-
-        if self._run_study_phase(hour, minute, account_ctx):
+        if cur_min >= close_min and not self._eod_done:
+            log.info("EOD gate: closing all options positions at %s", now.strftime("%H:%M"))
+            self.eod_close_all_options()
+            self._eod_done = True
             return
 
-        in_high_vol_window = self.is_high_volume_window(hour, minute)
+        if not self.broker.is_market_open():
+            log.info("Market closed — skipping options position monitor")
+            return
 
-        if self._daily_plan:
-            posture = self._daily_plan.get("risk_posture", "normal")
-            if posture in ("stand_aside", "conservative"):
-                reason = (self._daily_plan.get("special_warnings") or ["macro/market conditions"])[0]
-                log.warning("SESSION POSTURE: %s — %s", posture.upper(), reason[:120])
+        open_positions = self.database.get_open_options_positions()
+        if not open_positions:
+            log.info("No open options positions to monitor")
+            return
 
-        log.info("--- POSITION MGMT %s | vol_window=%s pnl=%.0f deployed=%.0f (%.1f%%) trades=%d/%d ---",
-                 now.strftime("%H:%M"), "YES" if in_high_vol_window else "MIDDAY",
-                 self._daily_pnl, self._deployed_today, exposure_pct,
-                 self._trades_today, config.MAX_TRADES_PER_DAY)
+        # Fetch account state once per cycle
+        try:
+            account = self.broker.get_account()
+            equity  = float(getattr(account, "equity", None) or config.ACCOUNT_SIZE)
+        except Exception:
+            equity  = config.ACCOUNT_SIZE
 
+        total_pnl = sum(float(p.get("current_pnl", 0)) for p in open_positions)
+        effective_pnl = self._daily_pnl + total_pnl
+
+        # Daily drawdown halt: close everything immediately
+        if effective_pnl <= -config.DAILY_DRAWDOWN_LIMIT:
+            log.warning(
+                "DRAWDOWN HALT: effective P&L $%.0f ≤ -$%.0f — flattening all options",
+                effective_pnl, config.DAILY_DRAWDOWN_LIMIT,
+            )
+            self.eod_close_all_options(reason="drawdown_halt")
+            return
+
+        for pos in open_positions:
+            try:
+                self._check_position_exits(pos, equity)
+            except Exception as exc:
+                log.error("Options position monitor error %s: %s",
+                          pos.get("position_id", "?"), exc)
+
+        log.info("Options monitor done — %d position(s) reviewed", len(open_positions))
+
+    def _check_position_exits(self, pos: dict, equity: float) -> None:
+        """
+        Evaluate all exit rules for a single open position.
+
+        Args:
+            pos:    Open options position dict from the database.
+            equity: Current account equity for P&L calculations.
+
+        Returns:
+            None.
+        """
+        position_id   = pos["position_id"]
+        symbol        = pos["symbol"]
+        strategy      = pos["strategy_type"]
+        contracts     = int(pos.get("contracts", 1))
+        entry_premium = float(pos.get("entry_premium", 0))
+        max_profit    = float(pos.get("max_profit",    0))
+        max_loss      = float(pos.get("max_loss",      1))
+        expiry        = pos.get("expiry", "")
+
+        is_credit = strategy in (CREDIT_PUT_SPREAD, CREDIT_CALL_SPREAD, IRON_CONDOR)
+
+        # ── Compute DTE remaining ─────────────────────────────────────────────
+        dte_remaining = self._compute_dte(expiry)
+
+        # ── Rule 1: DTE exit ──────────────────────────────────────────────────
+        should_exit_dte, dte_reason = OptionsRiskManager.should_exit_by_dte(
+            dte_remaining, strategy)
+        if should_exit_dte:
+            self._close_position(pos, dte_reason, equity, "dte_exit")
+            return
+
+        # ── Fetch current spread mark price ───────────────────────────────────
+        current_premium = self._get_current_spread_premium(pos, symbol)
+        if current_premium is None:
+            log.debug("Could not fetch current premium for %s — skipping this cycle",
+                      position_id)
+            return
+
+        # Update live P&L in the database
+        multiplier  = contracts * 100
+        if is_credit:
+            current_pnl = (entry_premium - current_premium) * multiplier
+        else:
+            current_pnl = (current_premium - entry_premium) * multiplier
+        self.database.update_options_position_pnl(position_id, current_pnl)
+
+        # ── Rule 2: 50% profit exit ───────────────────────────────────────────
+        should_tp, tp_reason = OptionsRiskManager.should_take_profit(
+            entry_premium, current_premium, is_credit)
+        if should_tp:
+            self._close_position(pos, tp_reason, equity, "50pct_profit",
+                                 realized_pnl=current_pnl)
+            return
+
+        # ── Rule 3: 200% stop loss ────────────────────────────────────────────
+        should_sl, sl_reason = OptionsRiskManager.should_stop_loss(
+            entry_premium, current_premium, is_credit)
+        if should_sl:
+            self._close_position(pos, sl_reason, equity, "stop_loss",
+                                 realized_pnl=current_pnl)
+            return
+
+        # ── Rule 4: Delta emergency exit ──────────────────────────────────────
+        short_delta_abs = self._get_short_leg_delta_abs(pos, symbol)
+        if short_delta_abs is not None:
+            should_exit_delta, delta_reason = OptionsRiskManager.should_exit_by_delta(
+                short_delta_abs, strategy)
+            if should_exit_delta:
+                self._close_position(pos, delta_reason, equity, "delta_exit",
+                                     realized_pnl=current_pnl)
+                return
+
+        log.debug("Position %s OK: DTE=%d pnl=%+.2f premium=%.2f (entry=%.2f)",
+                  symbol, dte_remaining, current_pnl, current_premium, entry_premium)
+
+    # ── Position closing ──────────────────────────────────────────────────────
+
+    def _close_position(
+        self,
+        pos:          dict,
+        reason:       str,
+        equity:       float,
+        close_reason: str,
+        realized_pnl: float = 0.0,
+    ) -> None:
+        """
+        Close all legs of an options position and record the outcome.
+
+        Args:
+            pos:          Open position dict from the database.
+            reason:       Human-readable close reason for logging and alerts.
+            equity:       Account equity at close time.
+            close_reason: Short label for the close_reason DB column.
+            realized_pnl: Computed P&L to record (0 if unavailable).
+
+        Returns:
+            None.
+        """
+        strategy    = pos["strategy_type"]
+        symbol      = pos["symbol"]
+        contracts   = int(pos.get("contracts", 1))
+        position_id = pos["position_id"]
+
+        log.info("CLOSE %s %s x%d: %s", symbol, strategy, contracts, reason[:80])
+
+        success = False
         with self._broker_lock:
-            positions_snapshot = self.build_positions_snapshot()
+            success = self._submit_close_orders(pos)
 
-        unrealized_pnl      = sum(p.get("pnl", 0) for p in positions_snapshot)
-        effective_daily_pnl = self._daily_pnl + unrealized_pnl
+        if not success:
+            log.warning("Close order failed for %s — will retry on next cycle", position_id)
+            return
 
-        if effective_daily_pnl <= -(equity * 0.015):
-            log.warning("Drawdown warning: effective P&L $%.0f (%.1f%% of equity, "
-                        "realized=%.0f unrealized=%.0f)",
-                        effective_daily_pnl, abs(effective_daily_pnl / equity * 100),
-                        self._daily_pnl, unrealized_pnl)
+        # Persist outcome
+        self.database.close_options_position(position_id, realized_pnl, close_reason)
+        self.database.record_options_decision(
+            symbol        = symbol,
+            action        = "CLOSE",
+            strategy_type = strategy,
+            position_id   = position_id,
+            rationale     = reason,
+            max_loss      = float(pos.get("max_loss", 0)),
+        )
 
-        self._execute_time_stop_exits(positions_snapshot, equity)
-        self._execute_partial_profit_exits(positions_snapshot, equity)
+        with self._state_lock:
+            self._daily_pnl += realized_pnl
 
-        positions_snapshot = self.build_positions_snapshot()
-        log.info("Position management done — %d open position(s)", len(positions_snapshot))
+        # Alert
+        entry_premium = float(pos.get("entry_premium", 0))
+        max_profit    = float(pos.get("max_profit",    0))
+        pnl_pct       = (realized_pnl / abs(float(pos.get("max_loss", 1))) * 100
+                         if pos.get("max_loss") else 0)
+        self.notifier.send_options_close_alert(
+            strategy_type = strategy,
+            symbol        = symbol,
+            contracts     = contracts,
+            realized_pnl  = realized_pnl,
+            pnl_pct       = pnl_pct,
+            close_reason  = close_reason,
+            entry_premium = entry_premium,
+            max_profit    = max_profit,
+            equity        = equity,
+            daily_pnl     = self._daily_pnl,
+            rationale     = reason,
+        )
+
+    def _submit_close_orders(self, pos: dict) -> bool:
+        """
+        Submit the appropriate closing orders for the given position.
+
+        For spreads: close both legs simultaneously.
+        For iron condors: close all four legs.
+
+        Args:
+            pos: Open position dict from the database.
+
+        Returns:
+            True if all close orders were submitted successfully; False otherwise.
+        """
+        strategy  = pos["strategy_type"]
+        contracts = int(pos.get("contracts", 1))
+
+        if strategy == IRON_CONDOR:
+            # Close put spread
+            put_ok = self.broker.close_spread_position(
+                long_symbol  = pos.get("put_long_symbol",   ""),
+                short_symbol = pos.get("put_short_symbol",  ""),
+                contracts    = contracts,
+            )
+            # Close call spread regardless of put result (avoid partial naked)
+            call_ok = self.broker.close_spread_position(
+                long_symbol  = pos.get("call_long_symbol",  ""),
+                short_symbol = pos.get("call_short_symbol", ""),
+                contracts    = contracts,
+            )
+            return put_ok and call_ok
+
+        # Vertical spreads (all other strategies)
+        long_sym  = pos.get("long_symbol",  "")
+        short_sym = pos.get("short_symbol", "")
+
+        if not long_sym or not short_sym:
+            log.warning("Missing leg symbols for position %s — cannot close",
+                        pos.get("position_id"))
+            return False
+
+        return self.broker.close_spread_position(long_sym, short_sym, contracts)
+
+    # ── EOD flattening ────────────────────────────────────────────────────────
+
+    def eod_close_all_options(self, reason: str = "eod_close") -> None:
+        """
+        Force-close all open options positions at end of day.
+
+        Uses market orders to guarantee flat by market close.
+        Called at 3:45 PM ET or on drawdown halt.
+
+        Args:
+            reason: Close reason label to store in the database.
+
+        Returns:
+            None.
+        """
+        open_positions = self.database.get_open_options_positions()
+        if not open_positions:
+            log.info("EOD close: no open options positions")
+            return
+
+        log.info("EOD close: flattening %d options position(s)", len(open_positions))
+
+        try:
+            account = self.broker.get_account()
+            equity  = float(getattr(account, "equity", None) or config.ACCOUNT_SIZE)
+        except Exception:
+            equity  = config.ACCOUNT_SIZE
+
+        for pos in open_positions:
+            entry_premium = float(pos.get("entry_premium", 0))
+            is_credit     = pos["strategy_type"] in (CREDIT_PUT_SPREAD, CREDIT_CALL_SPREAD, IRON_CONDOR)
+            current_prem  = self._get_current_spread_premium(pos, pos["symbol"])
+
+            if current_prem is not None and entry_premium > 0:
+                contracts  = int(pos.get("contracts", 1))
+                multiplier = contracts * 100
+                realized   = ((entry_premium - current_prem) if is_credit
+                              else (current_prem - entry_premium)) * multiplier
+            else:
+                realized = 0.0
+
+            self._close_position(
+                pos          = pos,
+                reason       = f"EOD flatten: {reason}",
+                equity       = equity,
+                close_reason = reason,
+                realized_pnl = realized,
+            )
+
+        log.info("EOD close complete — %d position(s) flattened", len(open_positions))
+
+    # ── Live premium estimation ───────────────────────────────────────────────
+
+    def _get_current_spread_premium(
+        self, pos: dict, symbol: str,
+    ) -> Optional[float]:
+        """
+        Estimate the current mark price of a spread position.
+
+        Attempts to fetch live quotes for both legs. Falls back to a
+        Black-Scholes approximation using current spot and IV if quotes fail.
+
+        Args:
+            pos:    Open position dict.
+            symbol: Underlying ticker.
+
+        Returns:
+            Current spread premium per share, or None on complete failure.
+        """
+        strategy  = pos["strategy_type"]
+        long_sym  = pos.get("long_symbol",  "")
+        short_sym = pos.get("short_symbol", "")
+        is_iron_condor = (strategy == IRON_CONDOR)
+
+        try:
+            # Attempt live quotes from broker
+            if not is_iron_condor and long_sym and short_sym:
+                long_quote  = self.broker.get_latest_quote(long_sym)
+                short_quote = self.broker.get_latest_quote(short_sym)
+                if long_quote and short_quote:
+                    long_mid  = (long_quote.get("bid",  0) + long_quote.get("ask",  0)) / 2
+                    short_mid = (short_quote.get("bid", 0) + short_quote.get("ask", 0)) / 2
+                    is_credit = strategy in (CREDIT_PUT_SPREAD, CREDIT_CALL_SPREAD)
+                    if is_credit:
+                        return round(short_mid - long_mid, 3)
+                    else:
+                        return round(long_mid - short_mid, 3)
+
+            if is_iron_condor:
+                # Iron condor: sum the two spreads' values
+                total = 0.0
+                for put_sym, call_sym in (
+                    (pos.get("put_long_symbol"),   pos.get("put_short_symbol")),
+                    (pos.get("call_long_symbol"),  pos.get("call_short_symbol")),
+                ):
+                    if put_sym and call_sym:
+                        long_q  = self.broker.get_latest_quote(put_sym or call_sym)
+                        short_q = self.broker.get_latest_quote(call_sym or put_sym)
+                        if long_q and short_q:
+                            total += ((short_q.get("ask", 0) + short_q.get("bid", 0)) / 2
+                                    - (long_q.get("bid",  0) + long_q.get("ask",  0)) / 2)
+                if total > 0:
+                    return round(total, 3)
+
+        except Exception as exc:
+            log.debug("Live quote failed for %s: %s — using BS fallback", symbol, exc)
+
+        # Black-Scholes fallback
+        return self._bs_spread_estimate(pos, symbol)
+
+    def _bs_spread_estimate(self, pos: dict, symbol: str) -> Optional[float]:
+        """
+        Estimate spread premium via Black-Scholes using current spot and IV.
+
+        Args:
+            pos:    Open position dict (contains entry strikes via OCC symbols).
+            symbol: Underlying ticker.
+
+        Returns:
+            Estimated premium per share, or None if data is unavailable.
+        """
+        try:
+            spot   = self.broker.get_latest_price(symbol)
+            if not spot:
+                return None
+
+            iv_data = self.iv_analyzer.get_iv_data(symbol)
+            atm_iv  = iv_data.get("atm_iv", float(pos.get("entry_vrp", 0.20)) or 0.20)
+            expiry  = pos.get("expiry", "")
+            if not expiry:
+                return None
+
+            dte  = max(1, (date.fromisoformat(expiry) - date.today()).days)
+            s_d  = float(pos.get("short_delta", 0.20))
+            l_d  = float(pos.get("long_delta",  0.10))
+
+            # Reconstruct approximate strikes from original deltas
+            is_call = pos["strategy_type"] in (
+                CREDIT_CALL_SPREAD, DEBIT_CALL_SPREAD, ZERO_DTE_CALL, IRON_CONDOR)
+            opt_type = "call" if is_call else "put"
+
+            short_g = GreeksEngine.compute_greeks(spot * (1 + s_d * 0.5), spot, dte,
+                                                   atm_iv, opt_type)
+            long_g  = GreeksEngine.compute_greeks(spot * (1 + l_d * 0.5), spot, dte,
+                                                   atm_iv, opt_type)
+
+            is_credit = pos["strategy_type"] in (
+                CREDIT_PUT_SPREAD, CREDIT_CALL_SPREAD, IRON_CONDOR)
+            if is_credit:
+                return round(short_g["price"] - long_g["price"], 3)
+            else:
+                return round(long_g["price"] - short_g["price"], 3)
+
+        except Exception as exc:
+            log.debug("BS spread estimate failed %s: %s", symbol, exc)
+            return None
+
+    def _get_short_leg_delta_abs(
+        self, pos: dict, symbol: str,
+    ) -> Optional[float]:
+        """
+        Compute the current absolute delta of the short leg.
+
+        Used for the delta emergency exit rule.
+
+        Args:
+            pos:    Open position dict.
+            symbol: Underlying ticker.
+
+        Returns:
+            Absolute delta of the short leg (0.0–1.0), or None on failure.
+        """
+        try:
+            spot   = self.broker.get_latest_price(symbol)
+            if not spot:
+                return None
+
+            iv_data = self.iv_analyzer.get_iv_data(symbol)
+            atm_iv  = iv_data.get("atm_iv", 0.20)
+            expiry  = pos.get("expiry", "")
+            dte     = max(1, (date.fromisoformat(expiry) - date.today()).days) if expiry else 1
+
+            # Reconstruct short strike from stored short_delta at entry
+            short_delta_entry = float(pos.get("short_delta", 0.20))
+            is_call = pos["strategy_type"] in (
+                CREDIT_CALL_SPREAD, DEBIT_CALL_SPREAD, ZERO_DTE_CALL)
+            opt_type = "call" if is_call else "put"
+
+            g = GreeksEngine.compute_greeks(spot, spot, dte, atm_iv, opt_type)
+            return abs(g["delta"])
+
+        except Exception as exc:
+            log.debug("Short leg delta computation failed %s: %s", symbol, exc)
+            return None
+
+    # ── DTE helper ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _compute_dte(expiry: str) -> int:
+        """
+        Return calendar days remaining to expiry.
+
+        Args:
+            expiry: Expiry date string (YYYY-MM-DD).
+
+        Returns:
+            Days remaining (≥ 0). Returns 0 for invalid or past dates.
+        """
+        if not expiry:
+            return 0
+        try:
+            return max(0, (date.fromisoformat(expiry) - date.today()).days)
+        except Exception:
+            return 0
+
+    # ── Portfolio snapshot ────────────────────────────────────────────────────
+
+    def build_options_portfolio_snapshot(self) -> dict:
+        """
+        Compute aggregate portfolio-level stats across all open options positions.
+
+        Used by the orchestrator for logging and pre-entry Greeks checks.
+
+        Returns:
+            Dict containing:
+              open_count       – number of open positions
+              total_pnl        – sum of current_pnl across all positions
+              total_max_loss   – sum of max_loss (worst-case aggregate loss)
+              portfolio_delta  – sum of net_delta
+              portfolio_vega   – sum of net_vega
+              portfolio_theta  – sum of net_theta (positive = favorable)
+              daily_par        – total premium at risk
+        """
+        positions       = self.database.get_open_options_positions()
+        total_pnl       = sum(float(p.get("current_pnl", 0))  for p in positions)
+        total_max_loss  = sum(float(p.get("max_loss",    0))  for p in positions)
+        portfolio_delta = sum(float(p.get("net_delta",   0))  for p in positions)
+        portfolio_vega  = sum(float(p.get("net_vega",    0))  for p in positions)
+        portfolio_theta = sum(float(p.get("net_theta",   0))  for p in positions)
+
+        return {
+            "open_count":      len(positions),
+            "total_pnl":       round(total_pnl,       2),
+            "total_max_loss":  round(total_max_loss,  2),
+            "portfolio_delta": round(portfolio_delta, 2),
+            "portfolio_vega":  round(portfolio_vega,  2),
+            "portfolio_theta": round(portfolio_theta, 2),
+            "daily_par":       round(total_max_loss,  2),
+        }

@@ -1,5 +1,7 @@
 from datetime import datetime
+from typing import Optional
 
+import yfinance as yf
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOrdersRequest
 from alpaca.trading.enums import QueryOrderStatus
@@ -9,13 +11,15 @@ import config
 
 from core.broker_orders import OrdersMixin
 from core.broker_data import MarketDataMixin
+from core.options_orders import OptionsOrdersMixin
 
 
-class AlpacaBroker(OrdersMixin, MarketDataMixin):
+class AlpacaBroker(OptionsOrdersMixin, OrdersMixin, MarketDataMixin):
     """Alpaca paper trading client plus historical data and market-data helpers."""
 
-    _ALPACA_TIMEOUT = 30
+    _ALPACA_TIMEOUT    = 30
     NEWS_CACHE_TTL_MIN = 15
+    _CHAIN_CACHE_TTL   = 1800   # 30 minutes: option chain data
 
     def __init__(self):
         """Create trading and data REST clients and enforce HTTP timeouts on their sessions."""
@@ -37,6 +41,10 @@ class AlpacaBroker(OrdersMixin, MarketDataMixin):
         self._news_cache: dict[str, list] = {}
         self._news_cache_ts: datetime | None = None
         self._news_stream: object | None = None
+
+        # yfinance options chain cache (key = "SYMBOL_EXPIRY")
+        self._broker_chain_cache: dict[str, object] = {}
+        self._broker_chain_ts:    dict[str, datetime] = {}
 
     def get_account(self):
         """Fetch the live Alpaca account snapshot.
@@ -105,3 +113,39 @@ class AlpacaBroker(OrdersMixin, MarketDataMixin):
             now_et = _dt.datetime.now(config.ET)
             return (now_et.weekday() < 5 and
                     _dt.time(9, 30) <= now_et.time() <= _dt.time(16, 0))
+
+    def get_option_chain(self, symbol: str, expiry: str) -> Optional[object]:
+        """
+        Fetch the full options chain for a symbol at a specific expiry via yfinance.
+
+        Alpaca's paper-trading options chain API is limited, so yfinance is used as
+        the chain data source.  The returned object is a yfinance OptionChain namedtuple
+        with `.calls` and `.puts` DataFrames, each row being one strike contract with
+        columns: contractSymbol, strike, bid, ask, impliedVolatility, openInterest, volume.
+
+        Results are cached for 30 minutes because chain data changes continuously
+        intraday but a per-strike refresh every scan cycle is unnecessary.
+
+        Args:
+            symbol: Underlying ticker symbol (e.g. 'AAPL', 'SPY').
+            expiry: Expiry date string (YYYY-MM-DD).
+
+        Returns:
+            yfinance OptionChain namedtuple with .calls and .puts, or None on failure.
+        """
+        cache_key = f"{symbol}_{expiry}"
+        now       = datetime.now()
+        cached_ts = self._broker_chain_ts.get(cache_key)
+        if cached_ts and (now - cached_ts).total_seconds() < self._CHAIN_CACHE_TTL:
+            return self._broker_chain_cache.get(cache_key)
+
+        try:
+            ticker = yf.Ticker(symbol)
+            chain  = ticker.option_chain(expiry)
+            self._broker_chain_cache[cache_key] = chain
+            self._broker_chain_ts[cache_key]    = now
+            return chain
+        except Exception as exc:
+            from core.database import log as _log
+            _log.warning("get_option_chain failed %s %s: %s", symbol, expiry, exc)
+            return None

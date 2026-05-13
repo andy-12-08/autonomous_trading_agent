@@ -17,7 +17,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 
 class Database:
-    """SQLite persistence for decisions, positions, daily summaries, and plans."""
+    """SQLite persistence for options positions, decisions, daily summaries, and plans."""
 
     def __init__(self, db_path: str):
         """Store the database path; each public method opens its own connection.
@@ -28,7 +28,7 @@ class Database:
         self.db_path = db_path
 
     def init_db(self) -> None:
-        """Create application tables and apply lightweight schema migrations.
+        """Create options trading tables with WAL mode for concurrent access.
 
         Returns:
             None.
@@ -36,38 +36,7 @@ class Database:
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
         c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS decisions (
-                id                INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts                TEXT NOT NULL,
-                symbol            TEXT NOT NULL,
-                action            TEXT NOT NULL,
-                price             REAL,
-                qty               REAL,
-                stop_loss         REAL,
-                take_profit       REAL,
-                pnl               REAL,
-                reasoning         TEXT,
-                outcome           TEXT,
-                outcome_pnl       REAL,
-                setup_type        TEXT,
-                confidence        INTEGER,
-                signal_score      REAL,
-                veto_rule         TEXT,
-                slippage_dollars  REAL
-            )
-        """)
-        for col_sql in (
-            "ALTER TABLE decisions ADD COLUMN setup_type TEXT",
-            "ALTER TABLE decisions ADD COLUMN confidence INTEGER",
-            "ALTER TABLE decisions ADD COLUMN signal_score REAL",
-            "ALTER TABLE decisions ADD COLUMN veto_rule TEXT",
-            "ALTER TABLE decisions ADD COLUMN slippage_dollars REAL",
-        ):
-            try:
-                c.execute(col_sql)
-            except sqlite3.OperationalError:
-                pass
+
         c.execute("""
             CREATE TABLE IF NOT EXISTS daily_summary (
                 date      TEXT PRIMARY KEY,
@@ -80,192 +49,285 @@ class Database:
             )
         """)
         c.execute("""
-            CREATE TABLE IF NOT EXISTS positions (
-                symbol        TEXT PRIMARY KEY,
-                entry_price   REAL,
-                qty           REAL,
-                stop_loss     REAL,
-                take_profit   REAL,
-                entry_ts      TEXT,
-                trailing      INTEGER DEFAULT 0,
-                highest_price REAL,
-                partial_taken INTEGER DEFAULT 0,
-                setup_type    TEXT
-            )
-        """)
-        for col_sql in (
-            "ALTER TABLE positions ADD COLUMN partial_taken INTEGER DEFAULT 0",
-            "ALTER TABLE positions ADD COLUMN setup_type TEXT",
-        ):
-            try:
-                c.execute(col_sql)
-            except sqlite3.OperationalError:
-                pass
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS gfv_positions (
-                symbol             TEXT PRIMARY KEY,
-                funded_by_settled  INTEGER NOT NULL DEFAULT 1,
-                settlement_date    TEXT NOT NULL,
-                entry_date         TEXT NOT NULL
-            )
-        """)
-        c.execute("""
             CREATE TABLE IF NOT EXISTS daily_plans (
                 date TEXT PRIMARY KEY,
                 plan TEXT NOT NULL
             )
         """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS options_positions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                position_id     TEXT NOT NULL UNIQUE,
+                symbol          TEXT NOT NULL,
+                strategy_type   TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'open',
+                contracts       INTEGER NOT NULL DEFAULT 1,
+                entry_ts        TEXT NOT NULL,
+                close_ts        TEXT,
+                expiry          TEXT,
+                long_symbol     TEXT,
+                short_symbol    TEXT,
+                put_long_symbol  TEXT,
+                put_short_symbol TEXT,
+                call_short_symbol TEXT,
+                call_long_symbol  TEXT,
+                long_order_id   TEXT,
+                short_order_id  TEXT,
+                entry_premium   REAL,
+                max_profit      REAL,
+                max_loss        REAL,
+                current_pnl     REAL DEFAULT 0,
+                target_dte      INTEGER,
+                short_delta     REAL,
+                long_delta      REAL,
+                entry_iv_rank   REAL,
+                entry_vrp       REAL,
+                net_delta       REAL,
+                net_theta       REAL,
+                net_vega        REAL,
+                close_reason    TEXT,
+                realized_pnl    REAL
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS options_decisions (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts              TEXT NOT NULL,
+                symbol          TEXT NOT NULL,
+                strategy_type   TEXT,
+                action          TEXT NOT NULL,
+                position_id     TEXT,
+                rationale       TEXT,
+                iv_rank         REAL,
+                iv_regime       TEXT,
+                vrp             REAL,
+                atm_iv          REAL,
+                signal_score    REAL,
+                market_regime   TEXT,
+                veto_rule       TEXT,
+                net_credit      REAL,
+                net_debit       REAL,
+                contracts       INTEGER,
+                max_loss        REAL
+            )
+        """)
         conn.commit()
         conn.close()
 
-    def record_decision(self, symbol, action, price=None, qty=None, stop_loss=None,
-                        take_profit=None, pnl=None, reasoning="", setup_type=None,
-                        confidence=None, signal_score=None, veto_rule=None,
-                        slippage_dollars=None) -> None:
-        """Record a trading decision (BUY, SELL, SKIP, HOLD) to the database.
+    # ── Options CRUD ──────────────────────────────────────────────────────────
+
+    def save_options_position(self, position_id: str, symbol: str,
+                               strategy_type: str, contracts: int,
+                               entry_premium: float, max_profit: float,
+                               max_loss: float, expiry: str,
+                               target_dte: int, entry_iv_rank: float,
+                               entry_vrp: float, net_delta: float,
+                               net_theta: float, net_vega: float,
+                               short_delta: float = 0.0,
+                               long_delta: float = 0.0,
+                               long_symbol: str = None,
+                               short_symbol: str = None,
+                               put_long_symbol: str = None,
+                               put_short_symbol: str = None,
+                               call_short_symbol: str = None,
+                               call_long_symbol: str = None,
+                               long_order_id: str = None,
+                               short_order_id: str = None) -> None:
+        """Insert a new options position record.
 
         Args:
-            symbol: Ticker symbol string.
-            action: Decision type string such as BUY, SELL, SKIP, or HOLD.
-            price: Fill or reference price at decision time.
-            qty: Share quantity involved in the decision.
-            stop_loss: Stop-loss price level.
-            take_profit: Take-profit price level.
-            pnl: Realized P&L if this is a closing action.
-            reasoning: Human-readable explanation of the decision.
-            setup_type: Strategy label string such as momentum or reversal.
-            confidence: Integer confidence score (0–100).
-            signal_score: Composite signal score from the scorer.
-            veto_rule: Name of the risk rule that blocked a trade, if any.
-            slippage_dollars: Difference between expected and actual fill cost.
+            position_id:     Unique ID string for this position (e.g. UUID).
+            symbol:          Underlying ticker.
+            strategy_type:   Strategy label (e.g. 'credit_put_spread').
+            contracts:       Number of contracts.
+            entry_premium:   Net premium received (credit) or paid (debit) per share.
+            max_profit:      Maximum possible profit for the position in dollars.
+            max_loss:        Maximum possible loss for the position in dollars.
+            expiry:          Option expiry date string (YYYY-MM-DD).
+            target_dte:      Target days to expiry at entry.
+            entry_iv_rank:   IV Rank at time of entry.
+            entry_vrp:       Volatility risk premium at time of entry.
+            net_delta:       Portfolio delta of the position at entry.
+            net_theta:       Portfolio theta of the position at entry.
+            net_vega:        Portfolio vega of the position at entry.
+            short_delta:     Target delta for the short leg.
+            long_delta:      Target delta for the long leg.
+            long_symbol:     OCC symbol for the long leg (spreads).
+            short_symbol:    OCC symbol for the short leg (spreads).
+            put_long_symbol: OCC symbol for the long put (iron condor).
+            put_short_symbol: OCC symbol for the short put (iron condor).
+            call_short_symbol: OCC symbol for the short call (iron condor).
+            call_long_symbol:  OCC symbol for the long call (iron condor).
+            long_order_id:   Alpaca order ID for the long leg.
+            short_order_id:  Alpaca order ID for the short leg.
 
         Returns:
             None.
         """
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute(
-            """INSERT INTO decisions
-               (ts, symbol, action, price, qty, stop_loss, take_profit,
-                pnl, reasoning, setup_type, confidence, signal_score, veto_rule,
-                slippage_dollars)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (datetime.now(timezone.utc).isoformat(), symbol, action,
-             price, qty, stop_loss, take_profit, pnl, reasoning, setup_type,
-             confidence, signal_score, veto_rule, slippage_dollars),
+            """INSERT INTO options_positions
+               (position_id, symbol, strategy_type, status, contracts,
+                entry_ts, expiry, long_symbol, short_symbol,
+                put_long_symbol, put_short_symbol, call_short_symbol, call_long_symbol,
+                long_order_id, short_order_id,
+                entry_premium, max_profit, max_loss, target_dte,
+                short_delta, long_delta,
+                entry_iv_rank, entry_vrp, net_delta, net_theta, net_vega)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (position_id, symbol, strategy_type, "open", contracts,
+             datetime.now(timezone.utc).isoformat(), expiry,
+             long_symbol, short_symbol,
+             put_long_symbol, put_short_symbol, call_short_symbol, call_long_symbol,
+             long_order_id, short_order_id,
+             entry_premium, max_profit, max_loss, target_dte,
+             short_delta, long_delta,
+             entry_iv_rank, entry_vrp, net_delta, net_theta, net_vega),
         )
         conn.commit()
         conn.close()
-        log.info("[%s] %s @ %.2f | qty=%.2f | SL=%.2f | TP=%.2f | pnl=%s | %s",
-                 action, symbol, price or 0, qty or 0,
-                 stop_loss or 0, take_profit or 0,
-                 f"{pnl:.2f}" if pnl is not None else "n/a",
-                 reasoning[:120])
+        log.info("Options position saved: %s %s x%d | premium=%.2f max_loss=%.2f",
+                 strategy_type, symbol, contracts, entry_premium, max_loss)
 
-    def update_outcome(self, symbol: str, outcome: str, outcome_pnl: float) -> None:
-        """Link the most recent unlinked BUY for this symbol to its trade outcome.
+    def update_options_position_pnl(self, position_id: str, current_pnl: float) -> None:
+        """Update the live unrealized P&L for an open options position.
 
         Args:
-            symbol: Ticker whose most recent open BUY row should be updated.
-            outcome: Result label such as win, loss, or breakeven.
-            outcome_pnl: Realized P and L for the completed trade.
+            position_id: Unique position identifier.
+            current_pnl: Current mark-to-market P&L in dollars.
 
         Returns:
             None.
         """
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.execute(
-            """UPDATE decisions SET outcome=?, outcome_pnl=?
-               WHERE id = (
-                   SELECT id FROM decisions
-                   WHERE symbol=? AND action='BUY' AND outcome IS NULL
-                   ORDER BY ts DESC LIMIT 1
-               )""",
-            (outcome, outcome_pnl, symbol),
+            "UPDATE options_positions SET current_pnl=? WHERE position_id=?",
+            (current_pnl, position_id),
         )
         conn.commit()
         conn.close()
 
-    def save_position(self, symbol, entry_price, qty, stop_loss, take_profit,
-                      trailing=False, highest_price=None, partial_taken=False,
-                      entry_ts=None, setup_type=None) -> None:
-        """Upsert a position record into the positions table.
-
-        If setup_type is None and the symbol already exists in the table, the
-        existing setup_type value is preserved.
+    def close_options_position(self, position_id: str, realized_pnl: float,
+                                close_reason: str) -> None:
+        """Mark an options position as closed with its final P&L and close reason.
 
         Args:
-            symbol: Ticker symbol.
-            entry_price: Price at which the position was entered.
-            qty: Share quantity held.
-            stop_loss: Current stop-loss price level.
-            take_profit: Current take-profit price level.
-            trailing: Whether trailing stop logic is active.
-            highest_price: Highest price seen since entry (used for trailing stops).
-            partial_taken: Whether a partial profit has already been taken.
-            entry_ts: ISO timestamp of entry; defaults to current UTC if omitted.
-            setup_type: Strategy label for the position.
+            position_id:  Unique position identifier.
+            realized_pnl: Final realized P&L in dollars.
+            close_reason: Short label explaining why the position was closed
+                          (e.g. '50pct_profit', 'stop_loss', 'dte_exit').
 
         Returns:
             None.
         """
         conn = sqlite3.connect(self.db_path, timeout=10)
-        if setup_type is None:
-            row = conn.execute(
-                "SELECT setup_type FROM positions WHERE symbol=?", (symbol,)
-            ).fetchone()
-            if row:
-                setup_type = row[0]
         conn.execute(
-            """INSERT OR REPLACE INTO positions
-               (symbol, entry_price, qty, stop_loss, take_profit, entry_ts,
-                trailing, highest_price, partial_taken, setup_type)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (symbol, entry_price, qty, stop_loss, take_profit,
-             entry_ts or datetime.now(timezone.utc).isoformat(),
-             int(trailing), highest_price or entry_price, int(partial_taken), setup_type),
+            """UPDATE options_positions
+               SET status='closed', close_ts=?, realized_pnl=?, close_reason=?
+               WHERE position_id=?""",
+            (datetime.now(timezone.utc).isoformat(), realized_pnl, close_reason, position_id),
         )
         conn.commit()
         conn.close()
+        log.info("Options position closed: %s | pnl=%.2f reason=%s",
+                 position_id, realized_pnl, close_reason)
 
-    def remove_position(self, symbol) -> None:
-        """Delete a position record from the positions table.
-
-        Args:
-            symbol: Ticker symbol of the position to remove.
-
-        Returns:
-            None.
-        """
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
-        conn.commit()
-        conn.close()
-
-    def get_open_positions_db(self) -> list[dict]:
-        """Return every row from the positions table as plain dicts.
+    def get_open_options_positions(self) -> list[dict]:
+        """Return all currently open options positions.
 
         Returns:
-            List of one dict per stored position row.
-        """
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM positions").fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
-
-    def get_recent_decisions(self, limit=50) -> list[dict]:
-        """Return the most recent trading decisions from the database.
-
-        Args:
-            limit: Maximum number of rows to return (default 50).
-
-        Returns:
-            List of decision dicts ordered newest-first.
+            List of dicts, one per open options position row.
         """
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM decisions ORDER BY ts DESC LIMIT ?", (limit,)
+            "SELECT * FROM options_positions WHERE status='open' ORDER BY entry_ts"
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_options_position(self, position_id: str) -> dict | None:
+        """Fetch a single options position by its unique ID.
+
+        Args:
+            position_id: The unique identifier for the position.
+
+        Returns:
+            Position dict, or None if not found.
+        """
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM options_positions WHERE position_id=?", (position_id,)
+        ).fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def record_options_decision(self, symbol: str, action: str,
+                                 strategy_type: str = None,
+                                 position_id: str = None,
+                                 rationale: str = "",
+                                 iv_rank: float = None,
+                                 iv_regime: str = None,
+                                 vrp: float = None,
+                                 atm_iv: float = None,
+                                 signal_score: float = None,
+                                 market_regime: str = None,
+                                 veto_rule: str = None,
+                                 net_credit: float = None,
+                                 net_debit: float = None,
+                                 contracts: int = None,
+                                 max_loss: float = None) -> None:
+        """Log an options trading decision (ENTER, CLOSE, SKIP, ADJUST).
+
+        Args:
+            symbol:        Underlying ticker.
+            action:        Decision type: ENTER, CLOSE, SKIP, or ADJUST.
+            strategy_type: Strategy label for the decision.
+            position_id:   Linked position ID (for CLOSE/ADJUST decisions).
+            rationale:     Human-readable explanation of the decision.
+            iv_rank:       IV Rank at decision time.
+            iv_regime:     IV regime label ('high', 'neutral', 'low').
+            vrp:           Volatility risk premium at decision time.
+            atm_iv:        ATM implied volatility.
+            signal_score:  Underlying directional signal score.
+            market_regime: Current intraday market regime.
+            veto_rule:     Risk rule that blocked a trade, if applicable.
+            net_credit:    Net credit received for credit strategies.
+            net_debit:     Net debit paid for debit strategies.
+            contracts:     Number of contracts.
+            max_loss:      Maximum possible loss for the position.
+
+        Returns:
+            None.
+        """
+        conn = sqlite3.connect(self.db_path, timeout=10)
+        conn.execute(
+            """INSERT INTO options_decisions
+               (ts, symbol, strategy_type, action, position_id, rationale,
+                iv_rank, iv_regime, vrp, atm_iv, signal_score, market_regime,
+                veto_rule, net_credit, net_debit, contracts, max_loss)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (datetime.now(timezone.utc).isoformat(), symbol, strategy_type, action,
+             position_id, rationale, iv_rank, iv_regime, vrp, atm_iv, signal_score,
+             market_regime, veto_rule, net_credit, net_debit, contracts, max_loss),
+        )
+        conn.commit()
+        conn.close()
+
+    def get_today_options_decisions(self) -> list[dict]:
+        """Return all options decisions logged today (UTC date).
+
+        Returns:
+            List of decision dicts for the current calendar day, newest-first.
+        """
+        today = datetime.now(timezone.utc).date().isoformat()
+        conn  = sqlite3.connect(self.db_path, timeout=10)
+        conn.row_factory = sqlite3.Row
+        rows  = conn.execute(
+            "SELECT * FROM options_decisions WHERE ts LIKE ? ORDER BY ts DESC",
+            (f"{today}%",),
         ).fetchall()
         conn.close()
         return [dict(r) for r in rows]

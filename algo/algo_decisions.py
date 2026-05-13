@@ -1,365 +1,345 @@
 """
-Algorithmic decision engine — replaces the LLM trading agent.
+Options decision engine: three-engine architecture for determining which options
+strategies to enter on each scan cycle.
 
-Decision flow per cycle:
-  1. HOLD for all open positions (mechanical stops handle exits)
-  2. Sort candidates by signal_score descending
-  3. Hard instrument veto  (inverse / leveraged / crypto ETFs)
-  4. Signal score floor    (< MIN_BUY_SCORE → SKIP)
-  5. Volume profile gate   (POC, value area, LVN)
-  6. Setup-type quality gate (momentum, gap_and_go, vwap_reclaim, mean_reversion)
-  7. Enrichment signals gate (dark pool distribution, bearish options flow)
-  8. Top MAX_BUYS by score → BUY; everything else → SKIP
+Engine priority order:
+  1. 0DTE Engine     — trending SPY/QQQ day within the entry window (highest priority)
+  2. Premium Seller  — IV Rank ≥ 50%: iron condor or credit spread
+  3. Directional Debit — IV Rank ≤ 30%: debit call/put spread with strong signal
+
+Each engine runs independently and produces a recommendation dict or SKIP.
+Recommendations flow to OptionsRiskManager for final approval before execution.
+
+Hard-veto instruments are blocked before any engine runs: leveraged/inverse ETFs
+and micro-caps below $10 have execution characteristics that break options sizing.
 """
 
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
 import config
+from analysis.options_strategy_selector import OptionsStrategySelector, SKIP
 from core.database import log
 
-# ── Instrument blocklist ────────────────────────────────────────────────────────
-# These instruments are structurally unsuitable for the algo sizing model:
-# inverse ETFs move opposite to our long-only strategy, leveraged ETFs decay
-# and have extreme ATR, crypto ETFs have non-equity risk characteristics.
-BLOCKED_INSTRUMENTS = frozenset({
-    # Inverse ETFs
+# ── Instrument blocklist ──────────────────────────────────────────────────────
+# Options on these instruments have structural problems: wide bid-ask spreads on
+# leveraged ETFs reset nightly, and inverse ETFs move against our models.
+_BLOCKED = frozenset({
     "SOXS", "SPXS", "SPXU", "SDOW", "SQQQ", "TZA", "SRTY", "ERY",
     "DRIP", "KOLD", "VXX", "UVXY", "SVXY", "DRV", "REK",
-    # Leveraged long ETFs (excessive ATR blows up risk sizing)
     "SOXL", "TQQQ", "UDOW", "URTY", "TNA", "ERX", "GUSH", "BOIL",
     "SPXL", "LABD", "LABU", "TECL", "TECS", "FAS", "FAZ",
-    # Crypto ETFs (non-equity risk, 24h market dynamics don't map to intraday)
     "BITO", "IBIT", "MSTU", "MSTX", "FBTC", "ARKB", "EZBC", "HODL",
 })
 
-# ── Score → confidence mapping ─────────────────────────────────────────────────
-# Mirrors the executor's CONFIDENCE_SIZE_SCALE tiers — higher score = bigger size.
-_SCORE_CONF = [
-    (9.5, 9),   # maximum conviction
-    (8.5, 8),   # strong
-    (7.5, 7),   # solid
-    (6.5, 6),   # minimum passing
-]
 
-MIN_BUY_SCORE = 7.0   # floor below which we never BUY
-MAX_BUYS      = 10    # candidates passed to execution — real cap is MAX_CONCURRENT_POSITIONS
-
-
-def _score_to_conf(score: float) -> int:
-    """Map a composite signal score to an integer confidence level (6–9).
-
-    Uses _SCORE_CONF tiers; returns 6 (minimum passing) when no tier matches.
-
-    Args:
-        score: Composite signal score from the signal scorer.
-
-    Returns:
-        Integer confidence in [6, 9] consumed by the executor's sizing logic.
+class OptionsDecisionEngine:
     """
-    for threshold, conf in _SCORE_CONF:
-        if score >= threshold:
-            return conf
-    return 6
+    Pure algorithmic, three-engine decision system for options strategies.
 
+    Produces decision dicts consumed by the OptionsExecutorMixin.  Each dict
+    contains:
+      action          – 'ENTER', 'SKIP', or 'HOLD'
+      symbol          – underlying ticker
+      strategy_type   – one of the strategy label constants (e.g. 'credit_put_spread')
+      direction       – 'bullish', 'bearish', or 'neutral'
+      target_dte      – target days to expiry at entry
+      spread_width    – width of spread in dollars
+      short_delta     – target delta for the short leg
+      long_delta      – target delta for the long leg
+      max_premium_risk – maximum premium to risk on the trade
+      rationale       – human-readable explanation of the strategy selection
+      signal_score    – underlying signal score (0–10)
+      iv_rank         – IV Rank at decision time
+      iv_regime       – 'high', 'neutral', or 'low'
+      vrp             – volatility risk premium
+      atm_iv          – ATM implied volatility at decision time
+      market_regime   – intraday market regime string
 
-def _skip(sym: str, conf: int, reason: str) -> dict:
-    """Build a minimal SKIP decision dict in the format execute_decisions expects.
-
-    Args:
-        sym: Uppercase ticker symbol.
-        conf: Signal confidence integer (used for audit logging only).
-        reason: Human-readable skip reason stored in the decisions table.
-
-    Returns:
-        Decision dict with action=SKIP and final_decision=SKIP.
-    """
-    return {
-        "symbol":            sym,
-        "action":            "SKIP",
-        "final_decision":    "SKIP",
-        "signal_confidence": conf,
-        "reason_for_entry":  reason,
-        "reason_to_avoid":   "",
-    }
-
-
-class AlgoDecisionEngine:
-    """Pure algorithmic replacement for TradingAgent.ask_agent().
-
-    Produces decision dicts in the same format as the executor expects,
-    so execute_decisions() and all downstream risk guards work unchanged.
+    SKIP decisions include only action, symbol, and rationale.
+    HOLD decisions are emitted for each symbol already in an open position.
     """
 
-    @staticmethod
+    def __init__(self) -> None:
+        """Initialize with a strategy selector instance."""
+        self._selector = OptionsStrategySelector()
+
     def make_decisions(
-        candidates: list[dict],
+        self,
+        candidates:     list[dict],
         open_positions: list[dict],
+        iv_data_map:    dict[str, dict],
+        market_regime:  str,
+        spy_move_pct:   float,
+        vix_level:      float,
+        hour:           int,
+        minute:         int,
     ) -> list[dict]:
-        """Evaluate candidates and open positions; return BUY / SKIP / HOLD dicts.
+        """
+        Evaluate all candidates through the three-engine architecture.
 
         Args:
-            candidates: Pre-filtered, enriched candidate dicts — any order.
-            open_positions: Current open position snapshots from the broker.
+            candidates:     Enriched candidate dicts from the scanner/enrichment
+                            pipeline.  Each must contain at minimum: symbol,
+                            signal_score, indicators, setup_type_hint.
+            open_positions: List of open options position dicts from the database.
+                            These are passed back as HOLD decisions so the audit
+                            trail is complete every cycle.
+            iv_data_map:    Output of IVAnalyzer.get_bulk_iv_regimes(), keyed by
+                            symbol.  Symbols without IV data are skipped.
+            market_regime:  Current intraday regime: 'trending_up',
+                            'trending_down', 'ranging', or 'choppy'.
+            spy_move_pct:   SPY move from today's open in percent.
+            vix_level:      Current VIX or realized vol proxy.
+            hour:           Current ET hour (0–23).
+            minute:         Current ET minute (0–59).
 
         Returns:
-            List of decision dicts consumable by execute_decisions().
+            List of decision dicts (ENTER, SKIP, HOLD) for the executor.
         """
         decisions: list[dict] = []
 
-        # ── HOLD all open positions ────────────────────────────────────────────
-        # The position manager's mechanical stops are the real exit logic.
-        # We emit HOLD so the executor records the decision for the audit trail.
+        # ── HOLD all open positions ───────────────────────────────────────────
+        # Position monitoring (50% profit, DTE exit, delta exit) is handled by
+        # OptionsPositionMixin — we only emit HOLDs here for the audit trail.
+        open_syms = set()
         for pos in open_positions:
+            sym = pos.get("symbol", "")
+            open_syms.add(sym)
             decisions.append({
-                "symbol":            pos["symbol"],
-                "action":            "HOLD",
-                "final_decision":    "HOLD",
-                "signal_confidence": 7,
-                "reason_for_entry":  "Algo: holding — mechanical stops active",
+                "action":   "HOLD",
+                "symbol":   sym,
+                "rationale": "Open position monitored by position manager",
             })
 
-        open_syms = {p["symbol"] for p in open_positions}
-
-        # Re-sort by score descending so MAX_BUYS picks the strongest setups,
-        # not the ones that happen to lead the sector-priority ordering.
+        # ── Sort candidates by signal score (strongest first) ─────────────────
         ranked = sorted(
             candidates,
             key=lambda x: float(x.get("signal_score", 0)),
             reverse=True,
         )
 
-        buys = 0
+        enters_this_cycle = 0
+
         for item in ranked:
-            sym   = item["symbol"]
+            sym   = item.get("symbol", "")
             score = float(item.get("signal_score", 0))
-            sig   = item.get("indicators", {})
-            setup = item.get("setup_type_hint", "momentum")
 
             if sym in open_syms:
+                continue   # already in a position; position manager handles it
+
+            # ── Hard instrument veto ─────────────────────────────────────────
+            if sym in _BLOCKED:
+                decisions.append(_skip(sym,
+                    "Blocked instrument: options on leveraged/inverse ETFs have "
+                    "structural bid-ask and reset issues"))
                 continue
 
-            # ── Hard instrument veto ───────────────────────────────────────────
-            if sym in BLOCKED_INSTRUMENTS:
-                decisions.append(_skip(sym, 2,
-                    "Blocked: inverse/leveraged/crypto ETF — unsuitable for algo sizing"))
+            # ── IV data required for all engines ─────────────────────────────
+            iv_data = iv_data_map.get(sym)
+            if not iv_data:
+                decisions.append(_skip(sym,
+                    "No IV data available — cannot evaluate engine suitability"))
                 continue
 
-            # ── Signal score floor ─────────────────────────────────────────────
-            if score < MIN_BUY_SCORE:
-                decisions.append(_skip(sym, max(2, int(score)),
-                    f"Score {score:.1f} below minimum {MIN_BUY_SCORE}"))
+            # ── Minimum price floor ───────────────────────────────────────────
+            spot = float(item.get("indicators", {}).get("price", 0) or 0)
+            if spot < config.MIN_UNDERLYING_PRICE:
+                decisions.append(_skip(sym,
+                    f"Underlying price ${spot:.2f} < minimum "
+                    f"${config.MIN_UNDERLYING_PRICE:.2f} — options too cheap for "
+                    "reliable delta targeting"))
                 continue
 
-            # ── Volume profile gate ────────────────────────────────────────────
-            vp_skip, vp_reason = _volume_profile_gate(sig, score)
-            if vp_skip:
-                decisions.append(_skip(sym, 4, vp_reason))
+            # ── Earnings blackout for credit strategies ───────────────────────
+            has_earnings = bool(item.get("earnings_soon", False))
+
+            # ── Strategy selector: routes through all three engines ───────────
+            direction = _derive_direction(item)
+            rec = self._selector.select_strategy(
+                symbol            = sym,
+                iv_data           = iv_data,
+                signal_score      = score,
+                signal_direction  = direction,
+                market_regime     = market_regime,
+                spy_move_pct      = spy_move_pct,
+                vix_level         = vix_level,
+                hour              = hour,
+                minute            = minute,
+                has_earnings_soon = has_earnings,
+            )
+
+            if rec["strategy_type"] == SKIP:
+                decisions.append(_skip(sym, rec["rationale"]))
                 continue
 
-            # ── Setup-type quality gate ────────────────────────────────────────
-            sq_skip, sq_reason = _setup_quality_gate(sig, setup, score)
-            if sq_skip:
-                decisions.append(_skip(sym, 5, sq_reason))
+            # ── Enrichment veto: dark pool + options flow contradictions ──────
+            veto, veto_reason = _enrichment_veto(item, rec, score)
+            if veto:
+                decisions.append(_skip(sym, veto_reason))
                 continue
 
-            # ── Enrichment signals gate ────────────────────────────────────────
-            es_skip, es_reason = _enrichment_gate(item, score)
-            if es_skip:
-                decisions.append(_skip(sym, 5, es_reason))
+            # ── Cycle cap: don't enter more than MAX_OPTIONS_ENTRIES per scan ─
+            if enters_this_cycle >= config.MAX_OPTIONS_ENTRIES_PER_CYCLE:
+                decisions.append(_skip(sym,
+                    f"Cycle entry cap ({config.MAX_OPTIONS_ENTRIES_PER_CYCLE}) reached "
+                    f"— {sym} deferred to next cycle"))
                 continue
 
-            # ── Top-N cap ─────────────────────────────────────────────────────
-            if buys >= MAX_BUYS:
-                decisions.append(_skip(sym, 5,
-                    f"Score {score:.1f} — outside top {MAX_BUYS} candidates this cycle"))
-                continue
-
-            conf     = _score_to_conf(score)
-            evidence = " | ".join(item.get("signal_evidence", [])[:5])
+            # ── Build ENTER decision dict ─────────────────────────────────────
             decisions.append({
-                "symbol":            sym,
-                "action":            "BUY",
-                "final_decision":    "BUY",
-                "signal_confidence": conf,
-                "setup_type":        setup,
-                "reason_for_entry":  (
-                    f"Score {score:.1f} [{item.get('signal_class', '')}]; {evidence}"
-                ),
-                "reason_to_avoid":   "",
-                # Carry scanner-computed volume and RSI through so the executor
-                # doesn't have to recompute them from a short 2-day bar window.
-                "vol_ratio":         sig.get("rvol") or sig.get("vol_ratio") or 0.0,
-                "rsi":               sig.get("rsi") or 50.0,
+                "action":           "ENTER",
+                "symbol":           sym,
+                "strategy_type":    rec["strategy_type"],
+                "direction":        rec["direction"],
+                "target_dte":       rec["target_dte"],
+                "spread_width":     rec["spread_width"],
+                "short_delta":      rec["short_delta"],
+                "long_delta":       rec["long_delta"],
+                "max_premium_risk": rec["max_premium_risk"],
+                "rationale":        rec["rationale"],
+                "signal_score":     score,
+                "iv_rank":          iv_data.get("iv_rank",    50.0),
+                "iv_regime":        iv_data.get("iv_regime",  "neutral"),
+                "vrp":              iv_data.get("vrp",        0.0),
+                "atm_iv":           iv_data.get("atm_iv",     0.20),
+                "market_regime":    market_regime,
+                "spot_price":       spot,
             })
-            buys += 1
+            enters_this_cycle += 1
 
-        buy_count  = sum(1 for d in decisions if d["action"] == "BUY")
-        hold_count = sum(1 for d in decisions if d["action"] == "HOLD")
-        skip_count = sum(1 for d in decisions if d["action"] == "SKIP")
-        log.info("Algo decisions: %d BUY  %d HOLD  %d SKIP", buy_count, hold_count, skip_count)
+        _log_summary(decisions)
         return decisions
 
+    # ── Convenience re-scorer ─────────────────────────────────────────────────
 
-# ── Gate implementations ────────────────────────────────────────────────────────
+    @staticmethod
+    def score_to_confidence(score: float) -> int:
+        """Map a 0–10 signal score to a 1–10 integer confidence level.
 
-def _volume_profile_gate(sig: dict, score: float) -> tuple[bool, str]:
-    """Gate on volume profile position relative to POC, value area, and LVN.
+        Args:
+            score: Composite signal score.
 
-    Volume profile fields (poc, vah, val, in_value_area, above_value_area,
-    below_value_area, near_poc, lvn_above) are computed by
-    patterns.compute_volume_profile() and merged into sig by the scanner.
+        Returns:
+            Integer confidence level consumed by risk sizing.
+        """
+        if score >= 9.5:
+            return 10
+        if score >= 8.5:
+            return 9
+        if score >= 7.5:
+            return 8
+        if score >= 6.5:
+            return 7
+        return 6
 
-    Rules (in order):
-      below VAL + bearish EMA → institutional supply rejected it → SKIP
-      inside value area without escape velocity → auction chop → SKIP
-        (exception: score ≥ 8.5 AND full EMA bull + above VWAP)
-      near POC without very high score → mean-reversion magnet → SKIP
-        (exception: score ≥ 9.0 OR already above VAH)
+
+# ── Module-level helpers ──────────────────────────────────────────────────────
+
+def _skip(symbol: str, reason: str) -> dict:
+    """Build a minimal SKIP decision dict."""
+    return {"action": "SKIP", "symbol": symbol, "rationale": reason}
+
+
+def _derive_direction(item: dict) -> str:
     """
-    above_vwap = bool(sig.get("above_vwap"))
+    Infer directional bias from the candidate's indicator snapshot.
+
+    Uses three binary votes (EMA cross, VWAP position, MACD histogram sign)
+    combined with the setup type hint to produce a clear directional label.
+    Tied votes (1–1 or missing data) return 'neutral'.
+    """
+    sig        = item.get("indicators", {})
+    setup      = item.get("setup_type_hint", "momentum")
+    above_vwap = bool(sig.get("above_vwap", False))
     ema9       = float(sig.get("ema9",  0))
     ema21      = float(sig.get("ema21", 0))
-    ema_bull   = ema9 > ema21
+    macd_hist  = float(sig.get("macd_hist", 0))
 
-    poc = sig.get("poc")
-    vah = sig.get("vah")
-    val = sig.get("val")
+    bullish_votes = sum([above_vwap, ema9 > ema21, macd_hist > 0])
 
-    # Below VAL — rejected from the volume cluster; overhead supply is dense
-    if sig.get("below_value_area") and not ema_bull:
-        val_str = f"VAL {float(val):.2f}" if val else "value area low"
-        return True, f"Below {val_str} — rejected from volume support, institutional supply overhead"
-
-    # Inside value area — price is in auction; momentum entries stall here because
-    # the market is still discovering fair value between VAL and VAH.
-    # Only allow if score signals breakout-in-progress (≥8.5) with full confirmation.
-    if sig.get("in_value_area") and not sig.get("above_value_area"):
-        if score < 8.5 or not (ema_bull and above_vwap):
-            poc_str = f"POC {float(poc):.2f}" if poc else "value area"
-            return True, (
-                f"Inside value area ({poc_str}) — auction zone, "
-                "momentum setups stall between VAL and VAH"
-            )
-
-    # Near POC — the highest-volume price acts as a gravitational centre.
-    # Score ≥ 9.0 can bypass this gate ONLY when price is at or above the POC
-    # (i.e. the stock has cleared the max-volume node and is now using it as support).
-    # Buying BELOW the POC means the POC is overhead supply — no score overrides that.
-    if sig.get("near_poc") and not sig.get("above_value_area"):
-        _price    = float(sig.get("price") or 0)
-        _poc_val  = float(poc) if poc else 0.0
-        _below_poc = _poc_val > 0 and _price < _poc_val
-        if score < 9.0 or _below_poc:
-            poc_str = f"POC {_poc_val:.2f}" if _poc_val else ""
-            if _below_poc:
-                return True, (
-                    f"Near POC {poc_str} and price {_price:.2f} is below it — "
-                    "buying into overhead supply, high reversion probability"
-                )
-            return True, (
-                f"Near POC {poc_str} — max-volume magnet, "
-                "high reversion probability before any continuation move"
-            )
-
-    return False, ""
-
-
-def _setup_quality_gate(sig: dict, setup: str, score: float) -> tuple[bool, str]:
-    """Setup-type-specific entry quality checks beyond the composite signal score.
-
-    Each setup type has structural requirements that the signal scorer already
-    rewards/penalises, but a failed structural requirement is a hard veto here
-    regardless of score — we won't enter a gap-and-go that hasn't gapped, etc.
-
-    momentum      — EMA9 > EMA21 + price above VWAP (both required)
-    gap_and_go    — gap ≥ config minimum + price cleared first-bar high or ORB-30
-    vwap_reclaim  — price confirmed above VWAP; fresh cross preferred at lower scores
-    mean_reversion — RSI in recovery zone (≤ 55) + anchored near POC or value area
-    """
-    above_vwap = bool(sig.get("above_vwap"))
-    ema9  = float(sig.get("ema9",  0))
-    ema21 = float(sig.get("ema21", 0))
-    rsi   = float(sig.get("rsi",   50))
-
-    if setup == "momentum":
-        if not (ema9 > ema21 and above_vwap):
-            missing = []
-            if not ema9 > ema21:
-                missing.append("EMA9>EMA21")
-            if not above_vwap:
-                missing.append("above VWAP")
-            return True, f"Momentum requires {' + '.join(missing)} — not confirmed"
-
-    elif setup == "gap_and_go":
-        gap_pct   = float(sig.get("gap_pct", 0))
-        above_fbh = bool(sig.get("above_first_bar_high"))
-        above_orb = bool(sig.get("above_orb_30"))
-        if gap_pct < config.GAP_AND_GO_MIN_PCT:
-            return True, (
-                f"Gap-and-go requires ≥{config.GAP_AND_GO_MIN_PCT}% gap — "
-                f"only {gap_pct:.1f}% today"
-            )
-        if not above_fbh and not above_orb:
-            return True, (
-                "Gap-and-go: price has not cleared first-bar high or ORB-30 — "
-                "no breakout confirmation, fakeout risk"
-            )
-
-    elif setup == "vwap_reclaim":
-        if not above_vwap:
-            return True, "VWAP reclaim: price still below VWAP — reclaim not confirmed"
-        vwap_cross = bool(sig.get("vwap_cross_up"))
-        # At lower scores require a fresh cross; strong scores can enter on continuation
-        if not vwap_cross and score < 8.0:
-            return True, (
-                "VWAP reclaim: no fresh cross-up on this bar — "
-                "chasing risk at this score level"
-            )
-
+    if setup in ("gap_and_go", "momentum", "vwap_reclaim"):
+        if bullish_votes >= 2:
+            return "bullish"
+        if bullish_votes == 0:
+            return "bearish"
     elif setup == "mean_reversion":
-        if rsi > 55:
-            return True, (
-                f"Mean reversion: RSI {rsi:.0f} too high — "
-                "not in reversal zone (need RSI ≤ 55 for credible reversion)"
-            )
-        # Must have a structural anchor to revert to
-        if not sig.get("in_value_area") and not sig.get("near_poc"):
-            return True, (
-                "Mean reversion: not near POC or inside value area — "
-                "no volume-based level to anchor the reversal"
-            )
+        return "bullish" if above_vwap else "neutral"
 
-    return False, ""
+    if bullish_votes >= 2:
+        return "bullish"
+    if bullish_votes == 0:
+        return "bearish"
+    return "neutral"
 
 
-def _enrichment_gate(item: dict, score: float) -> tuple[bool, str]:
-    """Use enrichment data as a final quality filter — only vetoes, never promotes.
-
-    Dark pool distribution signal → institutions are selling into retail buys → SKIP
-    Strongly bearish options flow without a news catalyst → smart money short → SKIP
-
-    These gates only trigger when the signal is unambiguous AND score is not
-    extremely high (≥ 8.5), since a very strong price setup can override flow.
+def _enrichment_veto(item: dict, rec: dict, score: float) -> tuple[bool, str]:
     """
-    # Dark pool: distribution signal with low dark-pool participation pct
-    dp = item.get("dark_pool", {})
-    if dp and isinstance(dp, dict):
-        dp_signal = str(dp.get("signal", "")).lower()
-        dp_pct    = float(dp.get("dark_pool_pct", 50))
-        if dp_signal == "distribution" and dp_pct < 30 and score < 8.5:
+    Block an ENTER decision when enrichment data directly contradicts the
+    proposed strategy direction.
+
+    Vetoes (direction-specific):
+      - Credit put spread / bullish debit: dark pool distribution signal
+      - Credit call spread / bearish debit: dark pool accumulation with strong upside
+      - Either spread direction: options flow strongly contradicts the trade
+
+    Args:
+        item:  Enriched candidate dict.
+        rec:   Strategy recommendation dict from OptionsStrategySelector.
+        score: Underlying signal score (high scores reduce veto sensitivity).
+
+    Returns:
+        (True, veto_reason) if veto applies; (False, "") otherwise.
+    """
+    strategy = rec.get("strategy_type", "")
+    direction = rec.get("direction", "neutral")
+
+    # Dark pool distribution against a bullish strategy
+    dp     = item.get("dark_pool", {})
+    dp_sig = str(dp.get("signal", "")).lower() if isinstance(dp, dict) else ""
+    dp_pct = float(dp.get("dark_pool_pct", 50)) if isinstance(dp, dict) else 50.0
+
+    if direction == "bullish" and dp_sig == "distribution" and dp_pct < 35 and score < 8.5:
+        return True, (
+            f"Dark pool distribution ({dp_pct:.0f}% dark activity) contradicts "
+            f"bullish {strategy} — institutional selling into retail momentum"
+        )
+
+    # Options flow contradiction: strong inverse flow vs the strategy direction
+    opts      = item.get("options_flow", {})
+    if isinstance(opts, dict):
+        pc_ratio     = float(opts.get("put_call_ratio", 1.0))
+        unusual_puts = bool(opts.get("unusual_puts",   False))
+        unusual_calls= bool(opts.get("unusual_calls",  False))
+
+        # Bearish flow against a bullish credit put spread
+        if (direction == "bullish" and pc_ratio > 2.0 and unusual_puts
+                and not item.get("has_catalyst") and score < 8.0):
             return True, (
-                f"Dark pool distribution ({dp_pct:.0f}% dark) — "
-                "institutional selling pressure contradicts long entry"
+                f"Options flow bearish (P/C={pc_ratio:.1f}, unusual puts) while "
+                f"entering bullish {strategy} — smart money positioned against trade"
             )
 
-    # Options flow: elevated put-call ratio with unusual puts and no catalyst
-    opts = item.get("options_flow", {})
-    if opts and isinstance(opts, dict):
-        put_call     = float(opts.get("put_call_ratio", 1.0))
-        unusual_puts = bool(opts.get("unusual_puts"))
-        catalyst_score = int(item.get("catalyst_score", 1 if item.get("has_catalyst") else 0))
-        if put_call > 2.0 and unusual_puts and catalyst_score < 2 and score < 8.0:
+        # Bullish flow against a bearish credit call spread
+        if (direction == "bearish" and pc_ratio < 0.5 and unusual_calls
+                and not item.get("has_catalyst") and score < 8.0):
             return True, (
-                f"Options flow bearish (P/C {put_call:.1f}x, unusual puts, no catalyst) — "
-                "smart money positioned short"
+                f"Options flow bullish (P/C={pc_ratio:.1f}, unusual calls) while "
+                f"entering bearish {strategy} — flow contradicts short call thesis"
             )
 
     return False, ""
+
+
+def _log_summary(decisions: list[dict]) -> None:
+    """Log a one-line summary of the decision cycle results."""
+    enter = sum(1 for d in decisions if d["action"] == "ENTER")
+    hold  = sum(1 for d in decisions if d["action"] == "HOLD")
+    skip  = sum(1 for d in decisions if d["action"] == "SKIP")
+    log.info("Options decisions: %d ENTER  %d HOLD  %d SKIP", enter, hold, skip)
+    for d in decisions:
+        if d["action"] == "ENTER":
+            log.info("  ENTER %-6s %-22s | %s",
+                     d["symbol"], d["strategy_type"], d["rationale"][:80])

@@ -1,4 +1,9 @@
-"""Central configuration: API keys from the environment, risk limits, and session times."""
+"""
+Central configuration for the options trading bot.
+
+All constants are defined here as the single source of truth.
+Environment variables are loaded from .env for secrets.
+"""
 
 import os
 import pytz
@@ -6,302 +11,332 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# US/Eastern — single source for session timing and bar end times
+# ── Timezone ─────────────────────────────────────────────────────────────────
 ET = pytz.timezone("America/New_York")
 
-# Alpaca
-ALPACA_KEY    = os.getenv("ALPACA_KEY")
-ALPACA_SECRET = os.getenv("ALPACA_SECRET")
+# ── Alpaca credentials ────────────────────────────────────────────────────────
+ALPACA_KEY      = os.getenv("ALPACA_KEY")
+ALPACA_SECRET   = os.getenv("ALPACA_SECRET")
 ALPACA_BASE_URL = os.getenv("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets")
 
-
-# Account
+# ── Account ───────────────────────────────────────────────────────────────────
 ACCOUNT_SIZE = 10_000.0
 
-# T+1 settlement cash account: practical daily buy cap = $4,000
-# (keeps $6K as settled buffer; yesterday's sales settle by market open)
-MAX_DAILY_CAPITAL  = 4_000.0
-SETTLEMENT_DAYS    = 1         # T+1: proceeds settle next business day
+# ── Daily drawdown hard stop ──────────────────────────────────────────────────
+# Halt all new entries for the day if daily P&L drops below this.
+DAILY_DRAWDOWN_LIMIT_PCT = 0.03        # 3% of equity ($300 on $10K)
+DAILY_DRAWDOWN_LIMIT     = ACCOUNT_SIZE * DAILY_DRAWDOWN_LIMIT_PCT
 
-# Risk per trade
-# Target 0.75% of equity ($75); hard ceiling 1% ($100)
-MAX_RISK_PER_TRADE_PCT = 0.0075
-MAX_RISK_PER_TRADE     = 100.0      # hard ceiling $100
+# ── Max daily premium at risk ─────────────────────────────────────────────────
+# Total premium that can be put at risk across ALL open options positions today.
+# This is the single most important guard for options — limits catastrophic loss.
+MAX_DAILY_PREMIUM_AT_RISK_PCT = 0.05   # 5% of equity ($500 on $10K)
+MAX_DAILY_PREMIUM_AT_RISK     = ACCOUNT_SIZE * MAX_DAILY_PREMIUM_AT_RISK_PCT
 
-# Daily drawdown guard
-DAILY_DRAWDOWN_LIMIT_PCT = 0.02                              # 2% of equity
-DAILY_DRAWDOWN_LIMIT     = ACCOUNT_SIZE * DAILY_DRAWDOWN_LIMIT_PCT  # $200
+# ── Per-trade premium risk limits ─────────────────────────────────────────────
+# Max premium dollars committed per individual trade, per strategy type.
+# For credit strategies, max_loss = spread width × contracts × 100 − credit received.
+# For debit strategies, max_loss = premium paid.
+MAX_PREMIUM_PER_TRADE_PCT = 0.015      # 1.5% of equity ($150 per trade)
+MAX_PREMIUM_PER_TRADE     = ACCOUNT_SIZE * MAX_PREMIUM_PER_TRADE_PCT
 
-# Exposure cap
-MAX_TOTAL_EXPOSURE_PCT = 0.40       # hard ceiling 40% of equity = $4,000 (matches daily buy cap)
-MIN_TOTAL_EXPOSURE_PCT = 0.15       # aim to deploy at least 15% when conditions allow
+# ── Concurrent options positions ──────────────────────────────────────────────
+MAX_CONCURRENT_OPTIONS_POSITIONS = 5   # max open options positions at once
+MAX_TRADES_PER_DAY               = 8   # max new positions opened per day
 
-# Position limits
-MAX_CONCURRENT_POSITIONS = 4           # max 4 stocks simultaneously
-MAX_POSITION_SIZE        = MAX_DAILY_CAPITAL  # hard ceiling = full daily cap; conviction tiers govern actual sizing
-MIN_POSITION_SIZE        = 0.0         # no minimum position size
-MAX_TRADES_PER_DAY       = 10          # Rule 16: quality over quantity
+# ── IV Regime thresholds ──────────────────────────────────────────────────────
+# IV Rank = (current IV - 52-week low IV) / (52-week high IV - 52-week low IV) × 100
+# These thresholds determine which engine runs for a given symbol.
+IV_RANK_HIGH_THRESHOLD    = 50    # IV Rank ≥ 50 → sell premium (options expensive)
+IV_RANK_LOW_THRESHOLD     = 30    # IV Rank ≤ 30 → buy options  (options cheap)
+# Between 30–50 is neutral; skip options, take equity trade instead
 
-# Conviction-weighted position sizing.
-# Each entry is (min_signal_score, fraction_of_MAX_DAILY_CAPITAL).
-# Tiers are evaluated in order; first match wins.
-# Actual cap = min(intended, remaining daily capital) — never exceeds what's left.
-CONVICTION_TIERS = [
-    (8.5, 0.60),   # high-conviction  (≥8.5): up to 60% of daily capital (~$2,400)
-    (7.5, 0.50),   # strong           (≥7.5): up to 50%                   (~$2,000)
-    (0.0, 0.30),   # below 7.5:               up to 30%                   (~$1,200)
+# IV Percentile thresholds (secondary confirmation)
+IV_PCT_HIGH_THRESHOLD = 60        # IV Percentile ≥ 60 → elevated, lean sell
+IV_PCT_LOW_THRESHOLD  = 35        # IV Percentile ≤ 35 → depressed, lean buy
+
+# Minimum ATM IV to engage options at all (low IV = thin premium, bad fills)
+MIN_ATM_IV = 0.15                 # 15% annualized IV floor
+
+# ── Volatility Risk Premium (VRP) ─────────────────────────────────────────────
+# VRP = Implied Vol − Realized Vol.
+# Positive VRP (IV > RV) → premium sellers have statistical edge.
+# The larger the VRP, the stronger the edge.
+MIN_VRP_TO_SELL     = 2.0         # require IV at least 2 pts above realized vol to sell
+REALIZED_VOL_WINDOW = 20          # 20-day realized volatility lookback
+
+# ── Engine 1: Premium Seller ──────────────────────────────────────────────────
+# Sells iron condors and credit spreads on high-IV instruments.
+# Primary instruments: SPY, QQQ, IWM (index ETFs — no earnings gap risk)
+PREMIUM_SELLER_SYMBOLS = ["SPY", "QQQ", "IWM", "XLK", "XLF", "XLE", "XLV"]
+
+# Spread parameters
+CREDIT_SPREAD_WIDTH       = 5.0   # width of credit spread in dollars (5-wide spread)
+IRON_CONDOR_WING_WIDTH    = 5.0   # width of each iron condor wing in dollars
+CREDIT_SPREAD_TARGET_DELTA = 0.20  # sell the ~20-delta strike (OTM, ~80% probability of profit)
+IRON_CONDOR_TARGET_DELTA  = 0.20  # both wings at ~20-delta
+
+# Exit rules (Tastytrade-validated: 50% max profit dramatically improves win rate)
+CREDIT_TAKE_PROFIT_PCT    = 0.50  # close at 50% of max profit
+CREDIT_STOP_LOSS_MULT     = 2.0   # close when premium worth 2× credit received (max loss = spread − credit)
+CREDIT_MAX_DTE_AT_ENTRY   = 45    # never sell more than 45 DTE out
+CREDIT_MIN_DTE_AT_ENTRY   = 14    # never sell less than 14 DTE (gamma risk too high)
+CREDIT_CLOSE_AT_DTE       = 7     # close regardless of P&L when 7 DTE remain
+
+# Earnings guard: never sell premium within N days of earnings (IV crush timing risk)
+CREDIT_EARNINGS_BUFFER_DAYS = 3
+
+# Minimum credit to bother: below this the fill/bid-ask cost destroys the edge
+MIN_CREDIT_PER_SPREAD     = 0.50  # $0.50 per contract ($50 per 1-lot)
+MIN_IRON_CONDOR_CREDIT    = 1.00  # $1.00 per condor ($100 per 1-lot)
+
+# ── Engine 2: Directional Debit Spreads ───────────────────────────────────────
+# Buys call/put debit spreads when IV is cheap AND a strong directional signal exists.
+# The spread structure (buy ATM, sell OTM) reduces vega exposure vs naked options.
+DEBIT_TARGET_DELTA       = 0.50   # buy the ATM strike (50-delta)
+DEBIT_SHORT_DELTA        = 0.30   # sell the 30-delta strike (OTM hedge leg)
+DEBIT_MAX_DTE_AT_ENTRY   = 21     # 14–21 DTE sweet spot (enough time, not too much decay)
+DEBIT_MIN_DTE_AT_ENTRY   = 7      # minimum 7 DTE to avoid aggressive theta decay
+DEBIT_CLOSE_AT_DTE       = 3      # close with ≥ 3 DTE remaining (gamma explosion risk)
+
+# Profit/loss targets for debit spreads
+DEBIT_TAKE_PROFIT_PCT    = 0.50   # close at 50% of max profit  (max profit = spread width − debit)
+DEBIT_STOP_LOSS_PCT      = 0.50   # close when lost 50% of premium paid
+
+# Signal quality gate: only enter debit spreads on strong underlying signals
+DEBIT_MIN_SIGNAL_SCORE   = 7.5    # underlying signal score must be ≥ 7.5
+DEBIT_MIN_CONFIDENCE     = 7      # minimum signal confidence 7/10
+
+# Max debit per spread as fraction of spread width (value check)
+DEBIT_MAX_DEBIT_FRACTION = 0.60   # never pay more than 60% of spread width as debit
+
+# ── Engine 3: 0DTE SPX Scalping ───────────────────────────────────────────────
+# Buys same-day-expiry SPX/SPY call or put spreads on trending market days.
+# Only triggers when the broad market has a clear directional bias.
+ZERO_DTE_SYMBOLS         = ["SPX", "SPY"]  # SPX preferred (no assignment risk, cash-settled)
+ZERO_DTE_SPREAD_WIDTH    = 5.0    # 5-point wide SPX spread
+ZERO_DTE_TARGET_DELTA    = 0.40   # slightly in-the-money for better fill probability
+ZERO_DTE_SHORT_DELTA     = 0.20   # sell OTM leg
+
+# Entry gates: only run 0DTE on trending days
+ZERO_DTE_MIN_SPY_MOVE_PCT = 0.40  # SPY must be up/down ≥ 0.40% from open to trade 0DTE
+ZERO_DTE_MAX_VIX          = 25.0  # don't trade 0DTE when VIX > 25 (erratic gamma)
+ZERO_DTE_ENTRY_START_HOUR = 9     # entry window start (ET)
+ZERO_DTE_ENTRY_START_MIN  = 45    # enter after the first 15 min of noise
+ZERO_DTE_ENTRY_END_HOUR   = 11    # no new 0DTE entries after 11 AM ET
+ZERO_DTE_ENTRY_END_MIN    = 0
+ZERO_DTE_FORCE_CLOSE_HOUR = 15    # force close all 0DTE by 3:30 PM ET
+ZERO_DTE_FORCE_CLOSE_MIN  = 30
+
+# 0DTE profit/loss targets
+ZERO_DTE_TAKE_PROFIT_PCT = 0.40   # take 40% of max profit quickly (gamma moves fast)
+ZERO_DTE_STOP_LOSS_PCT   = 0.50   # cut when 50% of premium gone
+
+# ── Greeks portfolio limits ───────────────────────────────────────────────────
+# Portfolio-level Greeks exposure caps. These prevent correlated blowups.
+MAX_PORTFOLIO_DELTA = 50.0        # net delta equivalent shares (SPY delta-adjusted)
+MAX_PORTFOLIO_VEGA  = 200.0       # max vega exposure ($200 per 1% IV move on portfolio)
+MAX_PORTFOLIO_THETA = 30.0        # min theta decay per day ($30/day positive theta target for sellers)
+
+# Per-position Greeks caps
+MAX_POSITION_DELTA  = 30.0        # max delta per single position
+MAX_POSITION_VEGA   = 100.0       # max vega per single position
+
+# ── Intraday P&L degradation ──────────────────────────────────────────────────
+# Scale down new positions as daily losses accumulate.
+INTRADAY_PNL_TIERS: list[tuple[float, float]] = [
+    (-0.020, 0.40),   # -2.0% drawdown: size ×0.40 — one bad trade from hard stop
+    (-0.015, 0.70),   # -1.5% drawdown: size ×0.70 — early warning
 ]
 
-# High-conviction threshold: allows a second position in the same sector bucket
-# (does NOT override position sizing — all positions are still risk-sized)
-HIGH_CONVICTION_THRESHOLD = 9
-
-# Mid-session PnL degradation — reduce position sizes as intraday losses accumulate.
-# Each entry: (daily_pnl_pct_threshold, size_multiplier).
-# Tiers are evaluated in order; first match (most severe) wins.
-# Hard stop at -2% is enforced separately by DAILY_DRAWDOWN_LIMIT.
-INTRADAY_PNL_TIERS = [
-    (-0.015, 0.40),   # -1.5%+ drawdown: size ×0.40 — severe, one bad trade from hard stop
-    (-0.010, 0.70),   # -1.0%+ drawdown: size ×0.70 — early warning, dial back aggression
+# ── VIX regime sizing ─────────────────────────────────────────────────────────
+# Scale all positions when market fear is extreme.
+VIX_REGIME_THRESHOLDS: list[tuple[float, float, str]] = [
+    (35.0, 0.30, "crisis"),    # VIX > 35 → fear spike, only sell premium with tiny size
+    (25.0, 0.55, "elevated"),  # VIX > 25 → avoid 0DTE, reduce debit trades
+    (18.0, 0.85, "normal"),    # VIX > 18 → standard operating range
+    ( 0.0, 1.10, "calm"),      # VIX ≤ 18 → calm market, slight boost for premium sellers
 ]
 
+# ── Session timing ────────────────────────────────────────────────────────────
+MARKET_OPEN_HOUR  = 9
+MARKET_OPEN_MIN   = 30
+MARKET_CLOSE_HOUR = 15
+MARKET_CLOSE_MIN  = 45   # no new entries after 3:45 PM ET
 
-# Quality filters
-MIN_REWARD_TO_RISK    = 2.0         # minimum 2:1 R:R — cut losses fast, let winners run
-MIN_SIGNAL_CONFIDENCE = 6           # hard floor
-MIN_VOL_RATIO_ENTRY   = 0.7         # require stock is on pace for ≥70% of avg daily volume (time-adjusted)
-MAX_SPREAD_PCT        = 0.02        # max 2.0% bid-ask spread — IEX quotes are wider than NBBO; true NBBO for liquid stocks is ~0.01%
+STUDY_START_HOUR  = 8
+STUDY_START_MIN   = 30
+STUDY_END_HOUR    = 9
+STUDY_END_MIN     = 30
 
-# Early-window vol_ratio relaxation
-# In the first 55 minutes after open (9:35–10:30 ET), cumulative volume is still
-# building and time-adjusted vol_ratio understates true activity.
-# Option A: relax threshold for all stocks in the early window.
-# Option B: relax further for confirmed gap-and-go setups (gap ≥ 2%, holding VWAP).
-EARLY_WINDOW_END_HOUR    = 10       # early window ends at start of 10:30 ET
-EARLY_WINDOW_END_MIN     = 30
-EARLY_WINDOW_VOL_RATIO   = 0.6     # Option A: general early-window floor (was 0.7)
-GAP_AND_GO_VOL_RATIO     = 0.5     # Option B: gap stocks floor (gap ≥ 2% + above VWAP)
-GAP_AND_GO_MIN_VOL_PCT   = 2.0     # minimum gap % to qualify for Option B relaxation
+# ── Scheduler intervals ───────────────────────────────────────────────────────
+POSITION_MGMT_INTERVAL_MINUTES = 2    # position monitoring cadence
+SCAN_INTERVAL_MINUTES          = 5    # full strategy scan cadence
+MIDDAY_SCAN_INTERVAL_MINUTES   = 15   # throttled midday scan
 
-# Stop / take-profit defaults (initial bracket order)
-DEFAULT_STOP_LOSS_PCT   = 0.012  # initial stop: 1.2% below entry (or ATR-based if larger)
-DEFAULT_TAKE_PROFIT_PCT = 0.025  # fallback for DB default only — not the active exit
-ATR_STOP_MULTIPLIER     = 1.5   # initial stop placed at 1.5× ATR from entry
+HIGH_VOLUME_WINDOWS = [
+    (9, 30, 11, 0),    # morning momentum
+    (14, 30, 15, 44),  # power hour into close
+]
 
-# Step-trailing stop parameters
-# Phase 1 (breakeven): when price reaches entry + BREAKEVEN_TRIGGER_PCT,
-#   move stop to entry × (1 − BREAKEVEN_STOP_BUFFER) and set trailing=True.
-# Phase 2 (step-trail): each position-management tick, while
-#   current_price ≥ current_stop × (1 + TRAIL_STEP_TRIGGER_PCT),
-#   step the stop up by TRAIL_STEP_SIZE_PCT.  Loop catches large price jumps.
-BREAKEVEN_TRIGGER_PCT  = 0.002  # +0.2% gain triggers the breakeven move
-BREAKEVEN_STOP_BUFFER  = 0.001  # stop set to entry × (1 − 0.001); 0.1% below entry
-TRAIL_STEP_TRIGGER_PCT = 0.003  # stop steps for every +0.3% above the current stop
-TRAIL_STEP_SIZE_PCT    = 0.001  # each step raises the stop by 0.1%
+# Prime entry window for debit/0DTE strategies
+PRIME_ENTRY_END_HOUR = 11
+PRIME_ENTRY_END_MIN  = 30
 
-# Safety TP for bracket-order validity — set far above entry so the Alpaca TP leg
-# never fires intraday.  The step-trailing stop is the real exit mechanism.
-BRACKET_TP_SAFETY = 3.0  # TP = entry × 3.0 (200% above entry — unreachable intraday)
+# ── Universe and watchlist ────────────────────────────────────────────────────
+WATCHLIST = [
+    # tech
+    "AAPL", "MSFT", "NVDA", "AMD", "GOOGL", "META", "INTC", "QCOM", "AVGO",
+    "ORCL", "CRM", "ADBE", "NFLX", "UBER", "PLTR", "CRWD", "PANW",
+    # consumer
+    "AMZN", "TSLA", "WMT", "COST", "NKE", "DIS", "MCD", "HD", "SBUX",
+    # finance
+    "JPM", "BAC", "GS", "WFC", "MS", "V", "MA", "AXP", "BLK",
+    # energy
+    "XOM", "CVX", "COP", "SLB", "EOG",
+    # healthcare
+    "UNH", "JNJ", "PFE", "ABBV", "MRK", "LLY", "AMGN", "GILD",
+    # industrial
+    "BA", "CAT", "GE", "HON", "RTX",
+    # index ETFs (premium seller targets always included)
+    "SPY", "QQQ", "IWM", "XLK", "XLF", "XLE", "XLV", "GLD",
+]
 
-# Confidence-scaled position sizing
-# Higher conviction signals get proportionally larger size.
-# Applied on top of the volatility regime factor.
-# conf < 6 is blocked by MIN_SIGNAL_CONFIDENCE so only 6–10 are reachable.
-CONFIDENCE_SIZE_SCALE: dict[int, float] = {
-    10: 1.20,   # maximum conviction — 20% above normal size
-    9:  1.00,   # strong — full normal size (baseline)
-    8:  0.85,   # good — slightly reduced
-    7:  0.70,   # solid — moderately smaller bet
-    6:  0.55,   # minimum passing — materially smaller bet
+# Symbols that are always scanned by the premium seller regardless of signal
+PREMIUM_SELLER_ALWAYS_SCAN = ["SPY", "QQQ", "IWM"]
+
+# ── Sector buckets ────────────────────────────────────────────────────────────
+SECTOR_BUCKETS: dict[str, list[str]] = {
+    "tech":       ["AAPL", "MSFT", "NVDA", "AMD", "GOOGL", "META", "INTC", "QCOM",
+                   "AVGO", "ORCL", "CRM", "ADBE", "NFLX", "UBER", "PLTR", "CRWD", "PANW"],
+    "consumer":   ["AMZN", "TSLA", "WMT", "COST", "NKE", "DIS", "MCD", "HD", "SBUX"],
+    "finance":    ["JPM", "BAC", "GS", "WFC", "MS", "V", "MA", "AXP", "BLK"],
+    "energy":     ["XOM", "CVX", "COP", "SLB", "EOG"],
+    "healthcare": ["UNH", "JNJ", "PFE", "ABBV", "MRK", "LLY", "AMGN", "GILD"],
+    "industrial": ["BA", "CAT", "GE", "HON", "RTX"],
+    "index_etf":  ["SPY", "QQQ", "IWM", "XLK", "XLF", "XLE", "XLV", "GLD"],
 }
 
-# Sector buckets
-# Max 1 position per bucket unless high-conviction (confidence ≥ 9)
-SECTOR_BUCKETS = {
-    "tech":        ["AAPL","MSFT","NVDA","AMD","GOOGL","META","INTC","QCOM","AVGO",
-                    "ORCL","CRM","ADBE","NFLX","UBER","PLTR","CRWD","PANW","SNOW","DDOG","ARM",
-                    "WDC","MU","STX","SNDK"],
-    "consumer":    ["AMZN","TSLA","WMT","TGT","COST","NKE","DIS","MCD","HD","LOW",
-                    "SBUX","ABNB","BKNG","F","GM"],
-    "finance":     ["JPM","BAC","GS","WFC","MS","C","V","MA","AXP","BLK","SCHW",
-                    "COF","USB"],
-    "crypto":      ["COIN","SQ","IBIT","MSTU"],
-    "energy":      ["XOM","CVX","COP","SLB","EOG","MPC","PSX","VLO","HAL","DVN"],
-    "healthcare":  ["UNH","JNJ","PFE","ABBV","MRK","LLY","TMO","AMGN","BMY","CVS",
-                    "GILD","ISRG","MRNA","REGN","VRTX"],
-    "industrial":  ["BA","CAT","GE","HON","UPS","FDX","RTX","DE","LMT","MMM"],
-    "index_etf":   ["SPY","QQQ","IWM","DIA","XLK","XLF","XLE","XLV","XLI","XLC",
-                    "GLD","SLV","TLT","TQQQ","SOXL"],
-}
-
-# Flat symbol-to-bucket lookup (built from SECTOR_BUCKETS)
 SYMBOL_BUCKET: dict[str, str] = {
     sym: bucket
     for bucket, symbols in SECTOR_BUCKETS.items()
     for sym in symbols
 }
 
-# Watchlist: ~75 liquid, large-cap stocks across all sectors — always scanned
-WATCHLIST = [
-    # tech (24)
-    "AAPL","MSFT","NVDA","AMD","GOOGL","META","INTC","QCOM","AVGO",
-    "ORCL","CRM","ADBE","NFLX","UBER","PLTR","CRWD","PANW","SNOW","DDOG","ARM",
-    "WDC","MU","STX","SNDK",
-    # consumer (10)
-    "AMZN","TSLA","WMT","TGT","COST","NKE","DIS","MCD","HD","SBUX",
-    # finance (10)
-    "JPM","BAC","GS","WFC","MS","V","MA","AXP","BLK","SCHW",
-    # energy (6)
-    "XOM","CVX","COP","SLB","EOG","MPC",
-    # healthcare (9)
-    "UNH","JNJ","PFE","ABBV","MRK","LLY","AMGN","GILD","MRNA",
-    # industrial (6)
-    "BA","CAT","GE","HON","UPS","RTX",
-    # index ETFs (9)
-    "SPY","QQQ","IWM","XLK","XLF","XLE","XLV","GLD","IBIT",
-]
+# ── Earnings blackout ─────────────────────────────────────────────────────────
+# For debit spreads: block entry within this many days of earnings.
+# For premium sellers: earnings are actually a catalyst for IV crush — handled separately.
+EARNINGS_BLACKOUT_DAYS_DEBIT  = 3    # avoid binary event risk for debit buyers
+EARNINGS_BLACKOUT_DAYS_CREDIT = 1    # credit sellers need to be OUT before earnings
 
-# Morning study window
-# 8:30 ET: pre-market study begins — catches 8:30 economic data (CPI, NFP, PCE, GDP)
-#           and reads 4.5 hours of pre-market price action before the open
-# 9:30 ET: market opens — study continues if not yet complete
-# 9:35 ET: trading begins
-MARKET_OPEN_HOUR        = 9
-MARKET_OPEN_MIN         = 30   # exchange opens
-STUDY_START_HOUR        = 8    # study begins at 8:30 ET (catches 8:30 macro data)
-STUDY_START_MIN         = 30   # study begins at 8:30 ET
-STUDY_END_HOUR          = 9    # study ends at 9:30 ET
-STUDY_END_MIN           = 30   # trading begins at the open
-MARKET_CLOSE_HOUR       = 15
-MARKET_CLOSE_MIN        = 45   # last entry window closes at 3:45
+# ── Circuit breaker ───────────────────────────────────────────────────────────
+CIRCUIT_BREAKER_SPY_DROP_PCT  = -2.0  # SPY down ≥ 2% from open → stand aside (wider than stocks)
+CIRCUIT_BREAKER_VIX_SURGE_PCT = 20.0  # VIX up ≥ 20% intraday → stand aside
 
-# Prime entry window — highest-quality momentum occurs in the first 45 min after open.
-# Outside this window, only very high conviction setups are allowed through.
-PRIME_ENTRY_END_HOUR    = 10
-PRIME_ENTRY_END_MIN     = 15
-MIDDAY_ENTRY_MIN_SCORE  = 9.0  # signal score required outside prime window
-MIDDAY_ENTRY_MIN_CONF   = 8    # signal confidence required outside prime window
+# ── Expectancy and cooling ────────────────────────────────────────────────────
+SYMBOL_COOLING_LOOKBACK      = 10
+SYMBOL_COOLING_MIN_WIN_RATE  = 0.30   # cool off symbol if WR < 30% on last 10 trades
+DYNAMIC_WINRATE_LOOKBACK     = 10
+DYNAMIC_WINRATE_THRESHOLD    = 0.45
+MAX_CONSECUTIVE_LOSSES       = 3      # after 3 consecutive losses, stand aside
 
-# Scheduler fires every SCAN_INTERVAL_MINUTES throughout the day.
-# During high-volume windows (9:35–11:00 and 2:30–3:45) every cycle runs a full scan.
-# During midday, the full market scan is throttled to MIDDAY_SCAN_INTERVAL_MINUTES
-# to reduce API calls during slow hours; position management still runs every 5 min.
-SCAN_INTERVAL_MINUTES        = 10   # scheduler base cadence (every 10 min all day)
-MIDDAY_SCAN_INTERVAL_MINUTES = 20   # full scan every 20 min during midday low-volume period
+# ── Screener ──────────────────────────────────────────────────────────────────
+SCREENER_MIN_PRICE    = 5.0
+SCREENER_MAX_PRICE    = 1000.0
+UNIVERSE_MAX_SYMBOLS  = 80
 
-# Dynamic universe screener
-# Each cycle: fetch top movers + most-actives from Alpaca, merge with WATCHLIST.
-# Falls back gracefully to WATCHLIST if the screener API is unavailable.
-UNIVERSE_MAX_SYMBOLS = 100      # 74 watchlist + 26 discovery; fits in 90s budget
-SCREENER_MIN_PRICE   = 3.0      # filter out sub-$3 micro-cap garbage; spread + dollar-vol guard the rest
-SCREENER_MAX_PRICE   = 500.0    # filter out very expensive illiquid names
-
-# Screener slot allocation
-# Fixed watchlist stocks are guaranteed every cycle — exclude them from screener
-# results so all screener slots go to genuine discovery.
-# Each source gets a protected quota so gainers always contributes fresh names
-# even when snapshot and most-actives overlap heavily.
-SCREENER_SNAPSHOT_SLOTS   = 15   # broad market sweep — top N non-watchlist stocks
-SCREENER_ACTIVES_SLOTS    = 7    # real-time volume leaders not already found
-SCREENER_GAINERS_SLOTS    = 4    # catalyst/% movers not already found (SNDK-type plays)
-
-# GFV (good-faith violation) avoidance
-# A GFV occurs when you buy with unsettled proceeds AND sell before those proceeds
-# settle. We prevent this by flagging any position bought with same-day proceeds.
-GFV_LOCK_DAYS = 1               # lock GFV-funded positions for 1 business day
-
-# High-volume trading windows
-# (start_hour, start_min, end_hour, end_min)  — all ET
-HIGH_VOLUME_WINDOWS = [
-    (9, 30, 11, 0),    # Morning momentum: open through first hour
-    (14, 30, 15, 44),  # Afternoon power hour: into the close
-]
-# Signal score gates — risk management (stops + sizing) is the real protection,
-# not artificially high thresholds that block legitimate midday setups.
-MIDDAY_MIN_SIGNAL_SCORE = 6.0  # mean-reversion, VWAP reclaim, consolidation breaks
-NORMAL_MIN_SIGNAL_SCORE = 6.0  # opening hour: gap-and-go, ORB, momentum
-
-# Volatility regime sizing
-# atr_pct = ATR / price.  The higher the volatility, the smaller the position.
-VOL_REGIME_THRESHOLDS = [
-    # (atr_pct_above, size_factor, label)
-    (0.040, 0.35, "extreme"),   # ATR > 4%  → 35% of normal size
-    (0.025, 0.55, "high"),      # ATR > 2.5% → 55%
-    (0.015, 0.75, "elevated"),  # ATR > 1.5% → 75%
-    (0.000, 1.00, "normal"),    # ATR ≤ 1.5% → full size
-]
-# If ATR/price > this, skip the trade entirely — too dangerous
-MAX_TRADEABLE_ATR_PCT = 0.05   # 5% ATR/price is the absolute cap
-
-# Signal quality gate
-# Items below this score are dropped before the algo engine evaluates them
-MIN_SIGNAL_SCORE_TO_AI = 5.0   # must match per-mode bars — 5.0–5.9 items add no value
-
-# VIX regime-aware sizing
-# SPY 10-day realized volatility (annualized %) is used as a market fear proxy.
-# Applied as an additional multiplier on top of per-stock ATR sizing.
-VIX_REGIME_THRESHOLDS: list[tuple[float, float, str]] = [
-    # (realized_vol_pct_above, size_factor, label)
-    (30.0, 0.40, "extreme"),   # vol > 30% → fear spike
-    (20.0, 0.70, "elevated"),  # vol > 20% → elevated fear
-    (13.0, 0.90, "normal"),    # vol > 13% → normal
-    ( 0.0, 1.10, "calm"),      # vol ≤ 13% → calm, slight boost
-]
-
-# Per-symbol cooling off
-# If a symbol's last N closed trades show win rate below the threshold,
-# skip it until its win rate recovers naturally.
-SYMBOL_COOLING_LOOKBACK     = 10    # min closed trades before cooling activates
-SYMBOL_COOLING_MIN_WIN_RATE = 0.25  # cool if recent WR < 25%
-
-# Confidence drift audit
-# Flag in daily email if 7-day avg confidence deviates > N pts from 90-day avg.
-CONFIDENCE_DRIFT_THRESHOLD = 2.0
-
-# Consecutive-loss guard
-MAX_CONSECUTIVE_LOSSES_NORMAL  = 2   # after 2 losses: raise confidence bar
-MAX_CONSECUTIVE_LOSSES_STANDASIDE = 3  # after 3 losses: stand aside
-
-# Portfolio heat
-# Heat = sum of (entry - stop) × qty across ALL open positions.
-# If every stop hits simultaneously, total loss must not exceed 2% of equity.
-MAX_PORTFOLIO_HEAT_PCT = 0.02     # 2% of equity — same as daily drawdown limit
-
-# Circuit breaker
-CIRCUIT_BREAKER_SPY_DROP_PCT   = -1.5   # SPY down ≥ 1.5% from today's open → stand aside
-CIRCUIT_BREAKER_UVXY_SURGE_PCT =  5.0   # UVXY up ≥ 5% intraday → stand aside
-
-# Earnings blackout
-EARNINGS_BLACKOUT_DAYS = 2        # skip stocks reporting within 2 calendar days
-
-# Time stop
-TIME_STOP_MINUTES      = 45       # max time to wait for thesis to materialise
-TIME_STOP_PROGRESS_PCT = 0.25     # must reach 25% of take-profit range by deadline
-
-# Partial profit (scale-out)
-PARTIAL_PROFIT_TRIGGER_PCT = 0.50  # sell 50% of shares when price hits 50% of TP range
-
-# Correlation guard
-MAX_HOLDING_CORRELATION    = 0.80  # block new position if 10-day return corr > this
-
-# Gap-and-go setup
-# First 90-min institutional play: gap from prior close + volume + holding above open
-GAP_AND_GO_MIN_PCT      = 1.5   # minimum % gap from prior close to qualify
-GAP_AND_GO_MAX_PCT      = 8.0   # above this the stock is too extended to chase
-GAP_AND_GO_CUTOFF_HOUR  = 11    # no new gap entries at or after 11:00 AM ET
-GAP_AND_GO_CUTOFF_MIN   = 0
-
-# Dynamic confidence threshold
-DYNAMIC_WINRATE_LOOKBACK   = 10    # last N closed trades to assess recent form
-DYNAMIC_WINRATE_THRESHOLD  = 0.40  # if recent win rate < 40% → raise confidence bar by 1
-
-# Daily email / SMTP
+# ── Email / SMTP ──────────────────────────────────────────────────────────────
 RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL", "okaforandrew416@gmail.com")
 SMTP_HOST       = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT       = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER       = os.getenv("SMTP_USER", "")
 SMTP_PASS       = os.getenv("SMTP_PASS", "")
 
-# Logging paths
-DB_PATH  = "trading_log.db"
+# ── Persistence ───────────────────────────────────────────────────────────────
+DB_PATH  = "options_trading.db"
 LOG_FILE = "bot.log"
+
+# ── Risk-free rate for Black-Scholes ─────────────────────────────────────────
+RISK_FREE_RATE = 0.05   # approximate 5% annualized (update periodically)
+
+# ── Minimum option liquidity gates ───────────────────────────────────────────
+MIN_OPTION_OPEN_INTEREST = 100    # skip strikes with OI < 100 contracts
+MIN_OPTION_VOLUME        = 10     # skip strikes with daily volume < 10
+MAX_OPTION_BID_ASK_PCT   = 0.10   # skip options with bid-ask spread > 10% of mid
+
+# ── Options constant aliases (readable names used across the stack) ────────────
+# These resolve name differences between the original equity bot and the new
+# options engine so all modules can use the most descriptive name.
+CREDIT_CLOSE_DTE_DAYS     = CREDIT_CLOSE_AT_DTE    # 7 — close credits at ≤7 DTE
+DEBIT_CLOSE_DTE_DAYS      = DEBIT_CLOSE_AT_DTE     # 3 — close debits at ≤3 DTE
+CREDIT_STOP_LOSS_MULTIPLIER = CREDIT_STOP_LOSS_MULT  # 2.0 — stop at 2× credit received
+MAX_OPEN_OPTIONS_POSITIONS  = MAX_CONCURRENT_OPTIONS_POSITIONS  # 5 — position cap
+
+# Maximum new options positions opened per single scan cycle (prevents burst entries)
+MAX_OPTIONS_ENTRIES_PER_CYCLE = 2
+
+# Maximum contracts per individual options trade (hard cap regardless of sizing)
+MAX_CONTRACTS_PER_TRADE = 5
+
+# Minimum underlying price to consider for options (sub-$10 stocks have illiquid chains)
+MIN_UNDERLYING_PRICE = 10.0
+
+# Earnings blackout default window (used by EarningsMixin generic check)
+EARNINGS_BLACKOUT_DAYS = max(EARNINGS_BLACKOUT_DAYS_DEBIT, EARNINGS_BLACKOUT_DAYS_CREDIT)
+
+# Maximum 10-day return correlation between an incoming and existing position
+MAX_HOLDING_CORRELATION = 0.80
+
+# UVXY surge threshold for the circuit breaker (UVXY up ≥ 5% → stand aside)
+CIRCUIT_BREAKER_UVXY_SURGE_PCT = 5.0
+
+# ── Screener slot allocation ──────────────────────────────────────────────────
+# Controls how many symbols are drawn from each screener bucket when building
+# the trading universe.
+SCREENER_SNAPSHOT_SLOTS = 20   # Alpaca snapshot (momentum leaders)
+SCREENER_ACTIVES_SLOTS  = 10   # most-active by volume
+SCREENER_GAINERS_SLOTS  = 10   # top percentage gainers
+
+# ── Signal score thresholds ───────────────────────────────────────────────────
+NORMAL_MIN_SIGNAL_SCORE  = 6.0   # minimum score to enter during core hours
+MIDDAY_MIN_SIGNAL_SCORE  = 7.0   # higher bar during low-conviction midday window
+MIN_SIGNAL_SCORE_TO_AI   = 5.0   # minimum score to pass to AI for analysis
+MIN_SIGNAL_CONFIDENCE    = 6     # minimum confidence (1–10 scale) for any entry
+HIGH_CONVICTION_THRESHOLD = 9    # score at or above this triggers full-size entry
+MIN_REWARD_TO_RISK       = 2.0   # minimum acceptable reward-to-risk ratio
+MIN_VOL_RATIO_ENTRY      = 1.5   # volume must be ≥1.5× 20-day average at entry
+
+# ── Portfolio heat and exposure limits (equity bot risk manager) ───────────────
+MAX_CONCURRENT_POSITIONS = 8             # legacy equity bot concurrent position cap
+MAX_DAILY_CAPITAL        = ACCOUNT_SIZE * 0.80  # max capital deployed in a day
+MAX_PORTFOLIO_HEAT_PCT   = 0.06          # halt new entries if total risk > 6% of equity
+MAX_TOTAL_EXPOSURE_PCT   = 0.90          # never deploy more than 90% of equity at once
+
+# Legacy alias so risk/manager.py can use the same thresholds as the options stack
+VOL_REGIME_THRESHOLDS = VIX_REGIME_THRESHOLDS
+
+# ── Per-trade sizing constants (equity bot legacy) ────────────────────────────
+MAX_RISK_PER_TRADE_PCT   = 0.02          # max 2% of equity risked per equity trade
+MAX_RISK_PER_TRADE       = ACCOUNT_SIZE * MAX_RISK_PER_TRADE_PCT
+MAX_POSITION_SIZE        = 0.10          # max 10% of equity in a single stock position
+MIN_POSITION_SIZE        = 1             # minimum 1 share (floor for small accounts)
+MAX_SPREAD_PCT           = 0.03          # skip equity with bid-ask > 3% of price
+MAX_TRADEABLE_ATR_PCT    = 0.05          # skip equity whose ATR > 5% of price (too erratic)
+
+# ── Stop and take-profit defaults (equity bot) ────────────────────────────────
+DEFAULT_STOP_LOSS_PCT    = 0.07          # 7% default stop loss for equity trades
+DEFAULT_TAKE_PROFIT_PCT  = 0.15          # 15% default take profit for equity trades
+ATR_STOP_MULTIPLIER      = 1.5           # stop = entry − ATR × 1.5
+TRAILING_STOP_TRIGGER_PCT  = 0.05        # activate trailing stop after 5% gain
+TRAILING_STOP_DISTANCE_PCT = 0.03        # trail 3% below the high-water mark
+BREAKEVEN_TRIGGER_PCT      = 0.015       # move stop to breakeven after 1.5% gain
+
+# ── Gap-and-go parameters (equity bot morning scanner) ───────────────────────
+GAP_AND_GO_MIN_PCT     = 0.02    # minimum gap size to qualify as a gap-and-go setup
+GAP_AND_GO_MAX_PCT     = 0.10    # gaps > 10% are too extended, skip
+GAP_AND_GO_CUTOFF_HOUR = 10      # no new gap-and-go entries after 10:00 ET
+GAP_AND_GO_CUTOFF_MIN  = 0
+
+# ── Signal confidence scaling (equity bot) ────────────────────────────────────
+CONFIDENCE_SIZE_SCALE      = 0.10   # scale position size by confidence above minimum
+CONFIDENCE_DRIFT_THRESHOLD = 0.20   # drift this far from target before rebalancing

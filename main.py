@@ -1,4 +1,14 @@
-"""Entry point: builds the trading stack, runs APScheduler jobs for live trading."""
+"""
+Entry point: builds the options trading stack and starts APScheduler jobs.
+
+Scheduler jobs:
+  run_position_management — every 2 minutes: position monitor, exit rules, EOD close
+  run_scan_and_trade      — every 5 minutes: universe → IV data → decisions → orders
+
+CLI flags:
+  --dry-run   Log decisions without submitting any broker orders.
+  --force     Bypass market-hours gates (use with --dry-run for testing).
+"""
 
 import argparse
 import signal
@@ -15,69 +25,57 @@ from core.database import log
 
 
 def graceful_exit(sig, frame):
-    """Handle SIGINT or SIGTERM by logging and exiting the process.
+    """Handle SIGINT or SIGTERM: log and exit.
 
     Args:
-        sig: Signal number from the OS.
+        sig:   Signal number.
         frame: Current stack frame (unused).
-
-    Returns:
-        Does not return; calls sys.exit(0).
     """
-    log.info("Shutdown signal received — stopping bot")
+    log.info("Shutdown signal received — stopping options bot")
     sys.exit(0)
 
 
 def main():
-    """Parse CLI flags, start the scheduler, and block until interrupt.
-
-    Recognizes optional flags --dry-run and --force from sys.argv.
+    """
+    Parse CLI flags, wire the trading stack, start the scheduler, and block.
 
     Returns:
-        None under normal loop exit; may call sys.exit from the signal handler.
+        None.
     """
-    parser = argparse.ArgumentParser(description="Autonomous stock trading bot")
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Log AI decisions without placing orders",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Bypass market-hours gates so the pipeline runs at any time (use with --dry-run)",
-    )
+    parser = argparse.ArgumentParser(description="Autonomous options trading bot")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Log decisions without placing orders")
+    parser.add_argument("--force",   action="store_true",
+                        help="Bypass market-hours gates (use with --dry-run)")
     args = parser.parse_args()
 
-    signal.signal(signal.SIGINT, graceful_exit)
+    signal.signal(signal.SIGINT,  graceful_exit)
     signal.signal(signal.SIGTERM, graceful_exit)
 
-    log.info("=" * 60)
-    suffix = ""
-    if args.dry_run:
-        suffix += "  [DRY-RUN]"
-    if args.force:
-        suffix += "  [FORCE]"
-    log.info("Autonomous Stock Trading Bot — starting up%s", suffix)
-    log.info(
-        "Account target: $%.0f | Max daily deploy: $%.0f",
-        config.ACCOUNT_SIZE,
-        config.MAX_DAILY_CAPITAL,
-    )
-    log.info(
-        "Max risk/trade: $%.0f | Max positions: %d",
-        config.MAX_RISK_PER_TRADE,
-        config.MAX_CONCURRENT_POSITIONS,
-    )
-    log.info("=" * 60)
+    log.info("=" * 65)
+    suffix = ("  [DRY-RUN]" if args.dry_run else "") + ("  [FORCE]" if args.force else "")
+    log.info("Autonomous Options Trading Bot — starting up%s", suffix)
+    log.info("Account: $%.0f | Max premium/trade: $%.0f | Max positions: %d",
+             config.ACCOUNT_SIZE,
+             config.MAX_PREMIUM_PER_TRADE,
+             config.MAX_OPEN_OPTIONS_POSITIONS)
+    log.info("IV high threshold: %d | IV low threshold: %d | Min VRP: %.1f pts",
+             config.IV_RANK_HIGH_THRESHOLD,
+             config.IV_RANK_LOW_THRESHOLD,
+             config.MIN_VRP_TO_SELL)
+    log.info("Exit rules: 50%% profit | 200%% stop | credit DTE≤%d | debit DTE≤%d",
+             config.CREDIT_CLOSE_DTE_DAYS,
+             config.DEBIT_CLOSE_DTE_DAYS)
+    log.info("=" * 65)
 
-    orchestrator, backtester = build_trading_stack(dry_run=args.dry_run)
+    orchestrator = build_trading_stack(dry_run=args.dry_run)
     if args.force:
         orchestrator.set_force_run(True)
 
     executors = {"default": ThreadPoolExecutor(max_workers=2)}
     scheduler = BackgroundScheduler(executors=executors, timezone=config.ET)
 
+    # ── Recurring jobs ────────────────────────────────────────────────────────
     scheduler.add_job(
         orchestrator.run_position_management,
         "interval",
@@ -96,6 +94,8 @@ def main():
         coalesce=True,
         misfire_grace_time=120,
     )
+
+    # ── Immediate startup triggers ────────────────────────────────────────────
     scheduler.add_job(
         orchestrator.run_position_management,
         "date",
@@ -108,15 +108,6 @@ def main():
         run_date=datetime.now(config.ET),
         id="immediate_scan",
     )
-    scheduler.add_job(
-        backtester.run_backtest,
-        "cron",
-        day_of_week="sun",
-        hour=8,
-        minute=0,
-        id="weekly_backtest",
-        max_instances=1,
-    )
 
     log.info("Scheduler started — position management every 2 min, scan every 5 min")
     scheduler.start()
@@ -125,7 +116,7 @@ def main():
         while True:
             time.sleep(1)
     except (KeyboardInterrupt, SystemExit):
-        log.info("Bot stopped by user")
+        log.info("Options bot stopped by user")
     finally:
         scheduler.shutdown(wait=False)
 
