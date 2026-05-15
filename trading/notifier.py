@@ -2,6 +2,7 @@ import smtplib
 import sqlite3
 import json
 import threading
+import time
 from email.mime.text import MIMEText
 from datetime import datetime
 
@@ -309,16 +310,29 @@ class Notifier:
         msg["To"]      = self.config.RECIPIENT_EMAIL
 
         def _send():
-            try:
-                with smtplib.SMTP(self.config.SMTP_HOST, self.config.SMTP_PORT, timeout=30) as server:
-                    server.ehlo()
-                    server.starttls()
-                    server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
-                    server.send_message(msg)
-                log.info("Trade alert sent → %s  [%s %s @ $%.2f]",
-                         self.config.RECIPIENT_EMAIL, action, symbol, price)
-            except Exception as e:
-                log.error("Trade alert email failed: %s", e)
+            for attempt in range(3):
+                if attempt:
+                    time.sleep(2 ** attempt)  # 2s, 4s
+                try:
+                    with smtplib.SMTP_SSL(self.config.SMTP_HOST, 465, timeout=30) as server:
+                        server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
+                        server.send_message(msg)
+                    log.info("Trade alert sent → %s  [%s %s @ $%.2f]",
+                             self.config.RECIPIENT_EMAIL, action, symbol, price)
+                    return
+                except Exception:
+                    try:
+                        with smtplib.SMTP(self.config.SMTP_HOST, 587, timeout=30) as server:
+                            server.ehlo()
+                            server.starttls()
+                            server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
+                            server.send_message(msg)
+                        log.info("Trade alert sent (STARTTLS) → %s  [%s %s @ $%.2f]",
+                                 self.config.RECIPIENT_EMAIL, action, symbol, price)
+                        return
+                    except Exception as e2:
+                        log.warning("Trade alert attempt %d/3 failed: %s", attempt + 1, e2)
+            log.error("Trade alert email failed after 3 attempts: %s %s @ $%.2f", action, symbol, price)
 
         threading.Thread(target=_send, daemon=True).start()
 
@@ -348,16 +362,29 @@ class Notifier:
             msg["To"]      = self.config.RECIPIENT_EMAIL
 
             def _send():
-                try:
-                    with smtplib.SMTP(self.config.SMTP_HOST, self.config.SMTP_PORT, timeout=30) as server:
-                        server.ehlo()
-                        server.starttls()
-                        server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
-                        server.send_message(msg)
-                    log.info("Daily summary email sent → %s  (P&L $%+.2f)",
-                             self.config.RECIPIENT_EMAIL, net_pnl)
-                except Exception as e:
-                    log.error("Failed to send daily summary email: %s", e)
+                for attempt in range(3):
+                    if attempt:
+                        time.sleep(2 ** attempt)
+                    try:
+                        with smtplib.SMTP_SSL(self.config.SMTP_HOST, 465, timeout=30) as server:
+                            server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
+                            server.send_message(msg)
+                        log.info("Daily summary email sent → %s  (P&L $%+.2f)",
+                                 self.config.RECIPIENT_EMAIL, net_pnl)
+                        return
+                    except Exception:
+                        try:
+                            with smtplib.SMTP(self.config.SMTP_HOST, 587, timeout=30) as server:
+                                server.ehlo()
+                                server.starttls()
+                                server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
+                                server.send_message(msg)
+                            log.info("Daily summary sent (STARTTLS) → %s  (P&L $%+.2f)",
+                                     self.config.RECIPIENT_EMAIL, net_pnl)
+                            return
+                        except Exception as e2:
+                            log.warning("Daily summary attempt %d/3 failed: %s", attempt + 1, e2)
+                log.error("Failed to send daily summary email after 3 attempts")
 
             threading.Thread(target=_send, daemon=True).start()
 

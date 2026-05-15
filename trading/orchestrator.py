@@ -143,6 +143,9 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
     def reset_daily_state(self):
         """Reset per-day counters, cached plan, and market-guard session state.
 
+        On a same-day restart the counters are restored from today's DB decisions so
+        that P&L, trade count, and deployed capital survive bot restarts.
+
         Returns:
             None.
         """
@@ -161,6 +164,41 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         self.market_guard.reset_intraday_regime()
         self.session_overrides.reset()
         log.info("=== Daily state reset for %s ===", self._session_date)
+        self._restore_daily_state_from_db()
+
+    def _restore_daily_state_from_db(self) -> None:
+        """Rebuild today's P&L, trade count, and deployed capital from the decisions DB.
+
+        Called after reset_daily_state so that same-day restarts pick up where they
+        left off instead of starting from zero.
+
+        Returns:
+            None.
+        """
+        today = self._session_date
+        try:
+            decisions = self.database.get_recent_decisions(500)
+        except Exception as exc:
+            log.warning("Could not restore daily state from DB: %s", exc)
+            return
+
+        today_dec = [d for d in decisions if (d.get("ts") or "").startswith(today)]
+        if not today_dec:
+            return
+
+        trades   = sum(1 for d in today_dec if d.get("action") == "BUY")
+        realized = sum((d.get("pnl") or 0) for d in today_dec
+                       if d.get("action") in ("SELL", "PARTIAL_SELL"))
+        deployed = sum(
+            (d.get("price") or 0) * (d.get("qty") or 0)
+            for d in today_dec if d.get("action") == "BUY"
+        )
+
+        self._trades_today   = trades
+        self._daily_pnl      = realized
+        self._deployed_today = deployed
+        log.info("Restored daily state from DB: trades=%d pnl=%.2f deployed=%.0f",
+                 trades, realized, deployed)
 
     def is_in_study_window(self, hour: int, minute: int) -> bool:
         """Return True when the clock lies inside the morning study window (ET).

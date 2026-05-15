@@ -350,8 +350,8 @@ class MarketDataMixin:
 
         return result
 
-    def get_last_filled_sell(self, symbol: str) -> dict | None:
-        """Return fill data for the most recently filled SELL for symbol today.
+    def get_last_filled_sell(self, symbol: str, after_ts: str | None = None) -> dict | None:
+        """Return fill data for the most recently filled SELL for symbol.
 
         Bracket stop/TP fills happen on child legs, not the parent order.
         This function checks three sources in order:
@@ -359,14 +359,28 @@ class MarketDataMixin:
           2. Account activities (FILL type) — most reliable for bracket legs
 
         Args:
-            symbol: Ticker symbol to check for filled sell orders.
+            symbol:   Ticker symbol to check for filled sell orders.
+            after_ts: ISO timestamp of the position entry.  When supplied the
+                      search window starts here, which correctly catches overnight
+                      bracket exits that filled before today's midnight cutoff.
+                      Falls back to 48 h ago when omitted.
 
         Returns:
             Dict with keys {fill_price, qty, filled_at}, or None if not found.
         """
-        sym_up      = symbol.upper()
-        today_start = datetime.combine(date.today(), datetime.min.time()).replace(
-            tzinfo=timezone.utc)
+        sym_up = symbol.upper()
+
+        # Resolve the look-back anchor.  Using entry_ts catches overnight fills;
+        # the 48 h fallback handles same-day exits where entry_ts is unavailable.
+        if after_ts:
+            try:
+                search_after = datetime.fromisoformat(after_ts)
+                if search_after.tzinfo is None:
+                    search_after = search_after.replace(tzinfo=timezone.utc)
+            except Exception:
+                search_after = datetime.now(timezone.utc) - timedelta(hours=48)
+        else:
+            search_after = datetime.now(timezone.utc) - timedelta(hours=48)
 
         def _extract_fill(o) -> dict | None:
             if str(getattr(o, "symbol", "")).upper() != sym_up:
@@ -383,15 +397,18 @@ class MarketDataMixin:
                 }
             return None
 
-        # Pass 1: closed orders — check parent orders and all bracket legs
+        # Pass 1: closed orders — check parent orders and all bracket legs.
+        # Sort newest-first so the most recent fill is returned when there are
+        # multiple closed sells for the same symbol (e.g. partial + full exit).
         try:
             req = GetOrdersRequest(
                 status=QueryOrderStatus.CLOSED,
                 symbols=[symbol],
-                limit=20,
-                after=today_start,
+                limit=50,
+                after=search_after,
             )
             orders = self._trade_client.get_orders(filter=req)
+            # Alpaca returns newest-first by default; iterate legs the same way.
             for o in orders:
                 hit = _extract_fill(o)
                 if hit:
@@ -403,23 +420,31 @@ class MarketDataMixin:
         except Exception as e:
             log.warning("get_last_filled_sell pass1 failed for %s: %s", symbol, e)
 
-        # Pass 2: account activities — catches bracket leg fills that are not
-        # surfaced at the top level of the orders list
+        # Pass 2: Alpaca /v2/account/activities/FILL REST endpoint — catches
+        # bracket leg fills that don't surface in the top-level orders list.
+        # Use `after` (ISO timestamp) instead of `date` so overnight fills are
+        # included regardless of which calendar day they executed on.
         try:
-            from alpaca.trading.requests import GetAccountActivitiesRequest
-            from alpaca.trading.enums import ActivityType
-            acts = self._trade_client.get_account_activities(
-                GetAccountActivitiesRequest(
-                    activity_types=[ActivityType.FILL],
-                    date=date.today().isoformat(),
-                )
+            resp = _requests.get(
+                f"{config.ALPACA_BASE_URL}/v2/account/activities/FILL",
+                headers={
+                    "APCA-API-KEY-ID":     config.ALPACA_KEY    or "",
+                    "APCA-API-SECRET-KEY": config.ALPACA_SECRET or "",
+                },
+                params={
+                    "after":     search_after.isoformat(),
+                    "page_size": 100,
+                    "direction": "desc",
+                },
+                timeout=6,
             )
-            for act in (acts or []):
-                act_sym   = str(getattr(act, "symbol", "")).upper()
-                act_side  = str(getattr(act, "side",   "")).lower()
-                act_price = getattr(act, "price",      None)
-                act_qty   = getattr(act, "qty",        None)
-                act_ts    = str(getattr(act, "transaction_time", "") or "")
+            resp.raise_for_status()
+            for act in resp.json():
+                act_sym   = str(act.get("symbol", "")).upper()
+                act_side  = str(act.get("side",   "")).lower()
+                act_price = act.get("price")
+                act_qty   = act.get("qty")
+                act_ts    = str(act.get("transaction_time", "") or "")
                 if act_sym == sym_up and "sell" in act_side and act_price:
                     log.info("get_last_filled_sell %s: found via activities fill=%.4f",
                              symbol, float(act_price))

@@ -47,13 +47,14 @@ class ScannerMixin:
             except Exception:
                 spy_5m = None
 
-        # SPY trend gate: are the last 3 five-minute bars net positive?
-        # Used in the executor to block long entries when the market is falling.
+        # SPY trend gate: block longs only if SPY is down meaningfully over last 15 min.
+        # Threshold of 0.15% filters out normal oscillations; only real selling triggers it.
         if spy_5m is not None and len(spy_5m) >= 4:
             _spy_c = spy_5m["close"].iloc[-4:].values
-            self._spy_trend_ok = bool(_spy_c[-1] > _spy_c[-4])  # last bar above 3 bars ago
-            log.info("SPY trend: %s (close %.2f vs %.2f, 3 bars ago)",
-                     "UP" if self._spy_trend_ok else "DOWN", _spy_c[-1], _spy_c[-4])
+            _spy_chg_pct = (_spy_c[-1] - _spy_c[-4]) / _spy_c[-4] * 100
+            self._spy_trend_ok = _spy_chg_pct > -0.15
+            log.info("SPY trend: %s (close %.2f vs %.2f, 3 bars ago, chg=%.3f%%)",
+                     "UP" if self._spy_trend_ok else "DOWN", _spy_c[-1], _spy_c[-4], _spy_chg_pct)
         else:
             self._spy_trend_ok = True  # can't determine — don't block
 

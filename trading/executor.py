@@ -229,7 +229,8 @@ class ExecutorMixin:
         _early_end = config.EARLY_WINDOW_END_HOUR * 60 + config.EARLY_WINDOW_END_MIN
         _in_early  = _open_min <= _cur_min < _early_end
         _gap_pct   = float(sig.get("gap_pct", 0))
-        _gap_go    = _in_early and _gap_pct >= config.GAP_AND_GO_MIN_VOL_PCT and bool(sig.get("above_vwap"))
+        _gap_go       = _in_early and _gap_pct >= config.GAP_AND_GO_MIN_VOL_PCT and bool(sig.get("above_vwap"))
+        _vwap_reclaim = sig.get("setup") == "vwap_reclaim"
 
         if _gap_go:
             _vol_floor = config.GAP_AND_GO_VOL_RATIO
@@ -266,8 +267,8 @@ class ExecutorMixin:
 
         # ── SPY trend gate ────────────────────────────────────────────────────────
         # Block long entries when the broad market is trending down over the last 15 min.
-        # Gap-and-go setups are exempt — a stock gapping up vs a down SPY shows real RS.
-        if not getattr(self, "_spy_trend_ok", True) and not _gap_go:
+        # Gap-and-go and VWAP reclaim are exempt — both show stock-level RS independent of SPY.
+        if not getattr(self, "_spy_trend_ok", True) and not _gap_go and not _vwap_reclaim:
             self.database.record_decision(symbol, "SKIP", price,
                             reasoning="SPY trend gate: market trending down — no long entries",
                             signal_score=_ss, veto_rule="SPY_TREND_GATE")

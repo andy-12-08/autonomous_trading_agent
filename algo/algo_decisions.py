@@ -230,9 +230,9 @@ def _volume_profile_gate(sig: dict, score: float) -> tuple[bool, str]:
 
     # Inside value area — price is in auction; momentum entries stall here because
     # the market is still discovering fair value between VAL and VAH.
-    # Only allow if score signals breakout-in-progress (≥8.5) with full confirmation.
+    # Allow if score >= 7.5 (signal is strong enough to overcome auction friction).
     if sig.get("in_value_area") and not sig.get("above_value_area"):
-        if score < 8.5 or not (ema_bull and above_vwap):
+        if score < 7.5:
             poc_str = f"POC {float(poc):.2f}" if poc else "value area"
             return True, (
                 f"Inside value area ({poc_str}) — auction zone, "

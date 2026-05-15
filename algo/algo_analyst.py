@@ -137,7 +137,11 @@ class AlgoMarketAnalyst(StudyDataMixin):
             special_warnings.append(f"High-impact macro event today: {event_titles}")
         elif macro_flag == "caution":
             risk_posture = "conservative"
-            special_warnings.append("Macro caution: significant economic release — be conservative")
+            high_events  = econ.get("high_impact", [])
+            event_titles = ", ".join(e.get("title", "") for e in high_events[:3])
+            special_warnings.append(
+                f"Macro caution ({event_titles}) — conservative posture, trades allowed with tighter filters"
+            )
 
         # ── 3. VIX proxy: UVXY day change ────────────────────────────────────────
         # UVXY rises when volatility spikes. >5% intraday = fear elevated;

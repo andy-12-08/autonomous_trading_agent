@@ -143,7 +143,7 @@ class PositionsMixin:
         except Exception:
             _bracket_equity = config.ACCOUNT_SIZE
 
-        fill = self.broker.get_last_filled_sell(symbol)
+        fill = self.broker.get_last_filled_sell(symbol, after_ts=db_pos.get("entry_ts"))
         if fill and fill["fill_price"]:
             fill_price = fill["fill_price"]
             pnl        = (fill_price - entry_price) * qty if entry_price else 0
@@ -323,6 +323,9 @@ class PositionsMixin:
             if not gfv_safe:
                 log.warning("Time stop blocked by GFV for %s: %s", sym, gfv_reason)
                 continue
+            # Cancel bracket legs first — without this, close_position conflicts with the
+            # active bracket order and Alpaca silently rejects the market sell.
+            self.broker.cancel_orders_for_symbol(sym)
             if not self.broker.close_position(sym):
                 continue
             with self._state_lock:

@@ -89,9 +89,11 @@ class StudyDataMixin:
                 kw in e["title"].lower() for e in high_impact for kw in CRITICAL_KEYWORDS
             )
 
+            # FOMC only → stand_aside.  CPI/NFP/GDP print at 8:30 AM and are
+            # already priced in by the open — trade the post-data trend instead.
+            # Multiple high-impact events on the same day (e.g. CPI m/m + Core CPI)
+            # do NOT escalate beyond caution; only FOMC warrants a full block.
             macro_flag = "stand_aside" if is_fomc else ("caution" if has_critical else "none")
-            if len(high_impact) >= 3:
-                macro_flag = "stand_aside"
 
             log.info(
                 "Economic calendar: %d high / %d medium USD events | flag=%s",
