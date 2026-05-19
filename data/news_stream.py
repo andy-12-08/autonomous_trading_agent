@@ -13,7 +13,7 @@ class NewsStream:
     """Real-time news feed via Alpaca's WebSocket.
 
     Subscribes to all news events and caches them by symbol in memory.
-    Runs in a daemon thread — starts once at bot startup, reconnects automatically.
+    Runs in a daemon thread  starts once at bot startup, reconnects automatically.
     """
 
     WS_URL           = "wss://stream.data.alpaca.markets/v1beta1/news"
@@ -30,7 +30,7 @@ class NewsStream:
         self._stop_event   = threading.Event()
         self._limit_hit    = False   # True when server says connection limit exceeded
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # -- Public API ------------------------------------------------------------
 
     def start(self) -> None:
         """Start the background WebSocket thread. Safe to call multiple times."""
@@ -71,7 +71,7 @@ class NewsStream:
             max_age_minutes: Discard articles older than this.
 
         Returns:
-            {symbol: [article, ...]} — only symbols with fresh articles are included.
+            {symbol: [article, ...]}  only symbols with fresh articles are included.
         """
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
         result: dict[str, list[dict]] = {}
@@ -93,7 +93,7 @@ class NewsStream:
     def is_connected(self) -> bool:
         return self._connected
 
-    # ── Internal WebSocket handlers ───────────────────────────────────────────
+    # -- Internal WebSocket handlers -------------------------------------------
 
     def _loop(self) -> None:
         while self._running:
@@ -112,7 +112,7 @@ class NewsStream:
             self._connected = False
             if self._running:
                 # Use a longer backoff when Alpaca says the connection limit was
-                # exceeded — the previous process's connection is still alive on
+                # exceeded  the previous process's connection is still alive on
                 # the server side and needs time to expire before we can reconnect.
                 wait = self.LIMIT_BACKOFF_S if self._limit_hit else self.RECONNECT_S
                 log.info("NewsStream: reconnecting in %ds", wait)
@@ -151,7 +151,7 @@ class NewsStream:
                 log.warning("NewsStream server error: %s", err_msg)
                 if "connection limit" in str(err_msg).lower():
                     self._limit_hit = True
-                    log.warning("NewsStream: connection limit hit — will wait %ds before retry "
+                    log.warning("NewsStream: connection limit hit  will wait %ds before retry "
                                 "to let previous connection expire on Alpaca's side",
                                 self.LIMIT_BACKOFF_S)
 

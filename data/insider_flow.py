@@ -1,7 +1,7 @@
 """
 Insider buying detector using yfinance (sourced from SEC EDGAR Form 4 filings).
 Open-market purchases by directors and officers are a strong conviction signal.
-Results cached for 6 hours — EDGAR filings update once or twice daily.
+Results cached for 6 hours  EDGAR filings update once or twice daily.
 """
 import yfinance as yf
 from datetime import datetime, date, timedelta
@@ -14,9 +14,9 @@ class InsiderFlowClient:
 
     Checks each symbol for recent open-market purchases by directors and
     officers within a configurable lookback window. Only net purchases are
-    flagged — sales and option exercises are filtered out.
+    flagged  sales and option exercises are filtered out.
 
-    Cache TTL is 6 hours — EDGAR Form 4 filings update once or twice daily.
+    Cache TTL is 6 hours  EDGAR Form 4 filings update once or twice daily.
     """
 
     _CACHE_TTL_SECONDS = 21600  # 6 hours
@@ -53,7 +53,7 @@ class InsiderFlowClient:
 
         result: dict[str, dict] = {}
         cutoff = date.today() - timedelta(days=days_back)
-        # ETFs have no insider transactions on Yahoo Finance — skip to avoid 404 spam
+        # ETFs have no insider transactions on Yahoo Finance  skip to avoid 404 spam
         candidates = [s for s in symbols[:max_symbols]
                       if config.SYMBOL_BUCKET.get(s) != "index_etf"]
 

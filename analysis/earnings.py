@@ -14,7 +14,7 @@ class EarningsMixin:
         """
         Clear the earnings blackout cache so each day starts fresh.
 
-        Call at the daily reset — earnings dates can change overnight.
+        Call at the daily reset  earnings dates can change overnight.
         """
         self._earnings_cache = {}
 
@@ -46,7 +46,7 @@ class EarningsMixin:
             today  = date.today()
             cutoff = today + timedelta(days=config.EARNINGS_BLACKOUT_DAYS)
 
-            # yfinance ≥ 0.2: calendar is a dict or DataFrame
+            # yfinance = 0.2: calendar is a dict or DataFrame
             cal = ticker.calendar
             if cal is None:
                 result = (False, "no earnings data")
@@ -77,7 +77,7 @@ class EarningsMixin:
                     ed: date = ts.date()  # type: ignore[assignment]
                     if today <= ed <= cutoff:
                         result = (True, (f"EARNINGS BLACKOUT: {symbol} reports on {ed} "
-                                         f"— binary gap risk, skip until after announcement"))
+                                         f" binary gap risk, skip until after announcement"))
                         self._earnings_cache[symbol] = result
                         log.warning(result[1])
                         return result
@@ -93,7 +93,7 @@ class EarningsMixin:
             self._earnings_cache[symbol] = result
             return result
 
-    # ── 3. Correlation Guard ───────────────────────────────────────────────────
+    # -- 3. Correlation Guard ---------------------------------------------------
 
     def check_correlation(self, symbol: str, open_positions: list[dict]) -> tuple[bool, str]:
         """
@@ -103,7 +103,7 @@ class EarningsMixin:
         Blocks entry if Pearson correlation with any holding exceeds
         config.MAX_HOLDING_CORRELATION.
 
-        This prevents holding AAPL + MSFT + NVDA simultaneously — all crash together.
+        This prevents holding AAPL + MSFT + NVDA simultaneously  all crash together.
 
         Args:
             symbol:         Ticker symbol of the candidate new position.
@@ -114,7 +114,7 @@ class EarningsMixin:
             or API failure returns (True, ...) to allow the trade.
         """
         if not open_positions:
-            return True, "no existing positions — correlation check skipped"
+            return True, "no existing positions  correlation check skipped"
 
         try:
             cand_df = self.broker.get_bars(symbol, "1Day", days=14)
@@ -146,7 +146,7 @@ class EarningsMixin:
                     corr = float(corr_matrix[0, 1])
                     if corr > config.MAX_HOLDING_CORRELATION:
                         reason = (f"CORRELATION GUARD: {symbol} vs {pos_sym} r={corr:.2f} "
-                                  f"> {config.MAX_HOLDING_CORRELATION:.2f} — "
+                                  f"> {config.MAX_HOLDING_CORRELATION:.2f}  "
                                   f"concentrated factor bet, diversify to uncorrelated sector")
                         log.info(reason)
                         return False, reason
@@ -154,8 +154,8 @@ class EarningsMixin:
                 except Exception:
                     continue
 
-            return True, f"correlation OK — {symbol} sufficiently uncorrelated with open positions"
+            return True, f"correlation OK  {symbol} sufficiently uncorrelated with open positions"
 
         except Exception as e:
-            log.warning("Correlation check failed for %s: %s — fail-open", symbol, e)
+            log.warning("Correlation check failed for %s: %s  fail-open", symbol, e)
             return True, f"correlation check failed (fail-open): {e}"

@@ -134,7 +134,7 @@ class Database:
             pnl: Realized P&L if this is a closing action.
             reasoning: Human-readable explanation of the decision.
             setup_type: Strategy label string such as momentum or reversal.
-            confidence: Integer confidence score (0–100).
+            confidence: Integer confidence score (0100).
             signal_score: Composite signal score from the scorer.
             veto_rule: Name of the risk rule that blocked a trade, if any.
             slippage_dollars: Difference between expected and actual fill cost.

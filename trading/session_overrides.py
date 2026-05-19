@@ -63,7 +63,7 @@ class SessionOverrides:
                         log.info(
                             "SESSION OVERRIDE: %s = %.2f  (default %.2f, plan requested %.2f%s)",
                             key, clamped, self._DEFAULTS[key], val,
-                            f" — clamped to bound [{lo},{hi}]" if clamped != val else "",
+                            f"  clamped to bound [{lo},{hi}]" if clamped != val else "",
                         )
                 except (TypeError, ValueError):
                     pass

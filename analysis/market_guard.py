@@ -3,18 +3,18 @@ Institutional-grade market-wide risk guards.
 
 Three independent layers, all fail-open (if data unavailable, allow trade):
 
-1. Circuit Breaker   — halts ALL new entries when broad market is in stress
-                       (SPY down ≥ 1.5% from open OR UVXY up ≥ 5% intraday)
+1. Circuit Breaker    halts ALL new entries when broad market is in stress
+                       (SPY down = 1.5% from open OR UVXY up = 5% intraday)
 
-2. Earnings Blackout — blocks any symbol reporting earnings within 2 calendar days
-                       (binary event risk — stop-losses cannot protect against gaps)
+2. Earnings Blackout  blocks any symbol reporting earnings within 2 calendar days
+                       (binary event risk  stop-losses cannot protect against gaps)
 
-3. Correlation Guard — blocks a new position if its 10-day return correlation
+3. Correlation Guard  blocks a new position if its 10-day return correlation
                        with any existing holding exceeds 0.80
                        (prevents concentrated factor bets that all fail at once)
 """
 import pandas as pd
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 import config
 
 from core.database import log
@@ -46,29 +46,29 @@ class MarketGuard(EarningsMixin):
         self.broker = broker
         self.indicators = indicators
 
-        # ── Circuit breaker state ──────────────────────────────────────────────
+        # -- Circuit breaker state ----------------------------------------------
         self._circuit_broken: bool = False   # latch: once triggered, stays on for the day
         self._circuit_reason: str  = ""
 
-        # ── Earnings cache ─────────────────────────────────────────────────────
+        # -- Earnings cache -----------------------------------------------------
         self._earnings_cache: dict = {}
 
-        # ── VIX regime cache ───────────────────────────────────────────────────
+        # -- VIX regime cache ---------------------------------------------------
         self._vix_cache = None
         self._vix_cache_ts = None
         self._VIX_TTL = 900  # seconds
 
-        # ── Market structure cache ─────────────────────────────────────────────
+        # -- Market structure cache ---------------------------------------------
         self._mkt_struct_cache = None
         self._mkt_struct_cache_ts = None
         self._MKT_STRUCT_TTL = 300   # 5-minute cache
 
-        # ── Intraday regime cache ──────────────────────────────────────────────
+        # -- Intraday regime cache ----------------------------------------------
         self._regime_cache = None
         self._regime_cache_ts = None
         self._REGIME_TTL = 600   # 10 minutes
 
-    # ── 1. Market Circuit Breaker ─────────────────────────────────────────────
+    # -- 1. Market Circuit Breaker ---------------------------------------------
 
     def reset_circuit_breaker(self):
         """
@@ -85,15 +85,15 @@ class MarketGuard(EarningsMixin):
 
         Checks once per call; latches for the rest of the session once triggered.
         Triggers on:
-          - SPY down ≥ CIRCUIT_BREAKER_SPY_DROP_PCT from today's first bar open
-          - UVXY up  ≥ CIRCUIT_BREAKER_UVXY_SURGE_PCT from today's first bar open
+          - SPY down = CIRCUIT_BREAKER_SPY_DROP_PCT from today's first bar open
+          - UVXY up  = CIRCUIT_BREAKER_UVXY_SURGE_PCT from today's first bar open
 
         Returns:
             Tuple of (trading_allowed: bool, reason: str). When False, reason
             contains a human-readable explanation of what triggered the breaker.
         """
         if self._circuit_broken:
-            return False, self._circuit_reason   # already tripped — stay off
+            return False, self._circuit_reason   # already tripped  stay off
 
         try:
             spy_df = self.broker.get_bars("SPY", "5Min", days=1)
@@ -107,7 +107,7 @@ class MarketGuard(EarningsMixin):
                         self._circuit_reason = (
                             f"CIRCUIT BREAKER: SPY {spy_chg:+.1f}% from open "
                             f"(threshold {config.CIRCUIT_BREAKER_SPY_DROP_PCT:.1f}%). "
-                            f"Broad market sell-off — no new entries for the rest of the day."
+                            f"Broad market sell-off  no new entries for the rest of the day."
                         )
                         log.warning(self._circuit_reason)
                         return False, self._circuit_reason
@@ -126,7 +126,7 @@ class MarketGuard(EarningsMixin):
                         self._circuit_reason = (
                             f"CIRCUIT BREAKER: UVXY +{uvxy_chg:.1f}% intraday "
                             f"(threshold +{config.CIRCUIT_BREAKER_UVXY_SURGE_PCT:.0f}%). "
-                            f"Volatility spike — no new entries for the rest of the day."
+                            f"Volatility spike  no new entries for the rest of the day."
                         )
                         log.warning(self._circuit_reason)
                         return False, self._circuit_reason
@@ -135,14 +135,14 @@ class MarketGuard(EarningsMixin):
 
         return True, "circuit breaker OK"
 
-    # ── 1b. VIX Regime ────────────────────────────────────────────────────────
+    # -- 1b. VIX Regime --------------------------------------------------------
 
     def get_vix_regime(self) -> tuple[str, float, float]:
         """
         Estimate market volatility regime using SPY's 10-day realized volatility.
 
         Uses SPY's 10-day realized volatility (annualized) as a market fear proxy.
-        Cached for 15 minutes — one SPY daily-bar fetch per cycle is enough.
+        Cached for 15 minutes  one SPY daily-bar fetch per cycle is enough.
 
         Returns:
             Tuple of (label, realized_vol_pct, size_factor) where:
@@ -176,23 +176,23 @@ class MarketGuard(EarningsMixin):
             return result
 
         except Exception as e:
-            log.warning("VIX regime check failed: %s — defaulting to normal", e)
+            log.warning("VIX regime check failed: %s  defaulting to normal", e)
             return ("normal", 0.0, 1.0)
 
-    # ── 1c. Market Structure (SPY / QQQ key levels) ───────────────────────────
+    # -- 1c. Market Structure (SPY / QQQ key levels) ---------------------------
 
     def get_market_structure(self) -> dict:
         """
         Compute SPY and QQQ key levels and derive a market_posture label.
 
-        Cached for 5 minutes — structural levels don't shift bar-to-bar.
+        Cached for 5 minutes  structural levels don't shift bar-to-bar.
 
         Market posture values:
-          "above_pdh"  — SPY broke above prev day high → broad bullish momentum, tailwind
-          "near_pdh"   — SPY within 0.5% of prev day high → approaching resistance wall
-          "mid_range"  — SPY between prev day levels → neutral, trade on individual signal
-          "near_pdl"   — SPY within 0.5% of prev day low → approaching support, be cautious
-          "below_pdl"  — SPY broke below prev day low → broad weakness, very selective
+          "above_pdh"   SPY broke above prev day high ? broad bullish momentum, tailwind
+          "near_pdh"    SPY within 0.5% of prev day high ? approaching resistance wall
+          "mid_range"   SPY between prev day levels ? neutral, trade on individual signal
+          "near_pdl"    SPY within 0.5% of prev day low ? approaching support, be cautious
+          "below_pdl"   SPY broke below prev day low ? broad weakness, very selective
 
         Returns:
             Dict with SPY and QQQ price/level fields plus market_posture label.
@@ -242,18 +242,18 @@ class MarketGuard(EarningsMixin):
                 result["market_posture"] = posture
                 result["spy_vs_pdh_pct"] = round(vs_pdh, 2)
                 result["spy_vs_pdl_pct"] = round(vs_pdl, 2)
-                log.info("Market structure: SPY=%.2f PDH=%.2f PDL=%.2f → posture=%s (vs_pdh=%+.2f%%)",
+                log.info("Market structure: SPY=%.2f PDH=%.2f PDL=%.2f ? posture=%s (vs_pdh=%+.2f%%)",
                          spy_price, spy_pdh, spy_pdl, posture, vs_pdh)
 
         except Exception as e:
-            log.warning("get_market_structure failed: %s — fail-open", e)
+            log.warning("get_market_structure failed: %s  fail-open", e)
             result = {}
 
         self._mkt_struct_cache    = result
         self._mkt_struct_cache_ts = now
         return result
 
-    # ── 1d. Intraday Regime Detector ──────────────────────────────────────────
+    # -- 1d. Intraday Regime Detector ------------------------------------------
 
     def reset_intraday_regime(self):
         """
@@ -269,11 +269,11 @@ class MarketGuard(EarningsMixin):
         Classify today's market environment as trending, ranging, or choppy.
 
         Re-evaluated every 10 minutes using SPY 5-min bars. Uses three signals:
-          1. ATR expansion ratio  — recent 5-bar ATR vs prior 15-bar ATR.
+          1. ATR expansion ratio   recent 5-bar ATR vs prior 15-bar ATR.
                                     Expansion > 1.2x = institutional activity.
-          2. Directional consistency — fraction of last 10 bars moving the same way.
+          2. Directional consistency  fraction of last 10 bars moving the same way.
                                     High = trending; low = oscillating.
-          3. Today's range vs ATR — if today's range < 40% of ATR → very tight = choppy.
+          3. Today's range vs ATR  if today's range < 40% of ATR ? very tight = choppy.
 
         Fail-open: defaults to "ranging" (neutral) on any data error.
 
@@ -289,7 +289,7 @@ class MarketGuard(EarningsMixin):
                 and (now - self._regime_cache_ts).total_seconds() < self._REGIME_TTL):
             return self._regime_cache
 
-        default = {"regime": "ranging", "note": "default — no SPY data"}
+        default = {"regime": "ranging", "note": "default  no SPY data"}
 
         try:
             df = self.broker.get_bars("SPY", "5Min", days=2)
@@ -306,7 +306,7 @@ class MarketGuard(EarningsMixin):
                 self._regime_cache_ts = now
                 return default
 
-            # ── Today's session range ─────────────────────────────────────────
+            # -- Today's session range -----------------------------------------
             dates      = [t.date() for t in df.index]
             today_date = dates[-1]
             today_bars = df[[d == today_date for d in dates]]
@@ -318,35 +318,35 @@ class MarketGuard(EarningsMixin):
             today_range_pct = (float(today_bars["high"].max()) -
                                float(today_bars["low"].min())) / price * 100
 
-            # ── ATR expansion: recent vs historical ───────────────────────────
+            # -- ATR expansion: recent vs historical ---------------------------
             atr_recent = float(df["atr"].iloc[-5:].mean())
             atr_older  = float(df["atr"].iloc[-20:-5].mean()) if len(df) >= 20 else atr_recent
             atr_pct    = float(df["atr"].iloc[-1]) / price * 100
             atr_ratio  = atr_recent / atr_older if atr_older > 0 else 1.0
 
-            # ── Directional consistency (last 10 bars) ────────────────────────
+            # -- Directional consistency (last 10 bars) ------------------------
             closes    = df["close"].iloc[-10:].tolist()
             up_bars   = sum(1 for i in range(1, len(closes)) if closes[i] > closes[i - 1])
             direction = abs(up_bars - (len(closes) - 1 - up_bars)) / max(len(closes) - 1, 1)
 
-            # ── Classification ────────────────────────────────────────────────
+            # -- Classification ------------------------------------------------
             if atr_ratio >= 1.2 and direction >= 0.5:
                 regime = "trending"
-                note   = (f"SPY trending — ATR ×{atr_ratio:.1f}, "
+                note   = (f"SPY trending  ATR {atr_ratio:.1f}, "
                           f"{up_bars}/{len(closes)-1} bars directional, "
                           f"range {today_range_pct:.2f}%")
             elif atr_ratio <= 0.8 and direction <= 0.3:
                 regime = "choppy"
-                note   = (f"SPY choppy — ATR ×{atr_ratio:.1f} (contracting), "
+                note   = (f"SPY choppy  ATR {atr_ratio:.1f} (contracting), "
                           f"mixed direction {direction:.1f}, "
                           f"range {today_range_pct:.2f}%")
             elif today_range_pct < atr_pct * 0.4:
                 regime = "choppy"
                 note   = (f"SPY tight range {today_range_pct:.2f}% "
-                          f"< 40% of ATR {atr_pct:.2f}% — low-conviction chop")
+                          f"< 40% of ATR {atr_pct:.2f}%  low-conviction chop")
             else:
                 regime = "ranging"
-                note   = (f"SPY ranging — ATR ×{atr_ratio:.1f}, "
+                note   = (f"SPY ranging  ATR {atr_ratio:.1f}, "
                           f"{up_bars}/{len(closes)-1} directional, "
                           f"range {today_range_pct:.2f}%")
 
@@ -359,12 +359,11 @@ class MarketGuard(EarningsMixin):
                 "up_bars_of_last_10":   up_bars,
             }
         except Exception as e:
-            log.warning("get_intraday_regime failed: %s — defaulting to ranging", e)
+            log.warning("get_intraday_regime failed: %s  defaulting to ranging", e)
             result = {"regime": "ranging", "note": f"error: {e}"}
 
         self._regime_cache    = result
         self._regime_cache_ts = now
         return result
 
-    # ── 2. Earnings Blackout ───────────────────────────────────────────────────
-
+    # -- 2. Earnings Blackout ---------------------------------------------------

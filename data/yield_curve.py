@@ -1,11 +1,11 @@
 """
-Yield curve + credit spread macro signal — free data via yfinance.
+Yield curve + credit spread macro signal  free data via yfinance.
 
 Two inputs:
   1. Treasury yield spread (10Y minus 3M):
-       > +1.0%  = normal / healthy — accommodative to equities
-       0 to 1%  = cautious — flattening signals slowing growth
-       < 0%     = inverted — historically precedes recessions 6–18 months out
+       > +1.0%  = normal / healthy  accommodative to equities
+       0 to 1%  = cautious  flattening signals slowing growth
+       < 0%     = inverted  historically precedes recessions 618 months out
 
   2. Credit spread proxy (HYG vs LQD intraday relative performance):
        HYG = iShares iBoxx High Yield Bond ETF (junk / risk-on)
@@ -14,10 +14,10 @@ Two inputs:
        HYG underperforming LQD = credit stress emerging (risk-off signal)
 
 Risk signal and size multiplier:
-  "risk_on"  → ×1.00  (normal sizing)
-  "normal"   → ×1.00
-  "cautious" → ×0.85  (trim size 15%)
-  "risk_off" → ×0.75  (trim size 25%)
+  "risk_on"  ? 1.00  (normal sizing)
+  "normal"   ? 1.00
+  "cautious" ? 0.85  (trim size 15%)
+  "risk_off" ? 0.75  (trim size 25%)
 
 Cache: 1 hour (intraday bond/yield data changes slowly; one refresh per hour is enough).
 """
@@ -34,16 +34,16 @@ class YieldCurveClient:
       1. Treasury yield spread (10Y minus 3M): inverted = recession risk
       2. Credit spread proxy (HYG vs LQD): HYG outperform = risk appetite healthy
 
-    Results cached for 1 hour — bond/yield data changes slowly intraday.
+    Results cached for 1 hour  bond/yield data changes slowly intraday.
     """
 
     _CACHE_TTL_SECONDS = 3600    # 1 hour
 
     # Yield spread thresholds
-    SPREAD_RISK_OFF   = 0.0    # 10Y-3M < 0.0  → inverted
-    SPREAD_CAUTIOUS   = 1.0    # 10Y-3M < 1.0  → flattening
+    SPREAD_RISK_OFF   = 0.0    # 10Y-3M < 0.0  ? inverted
+    SPREAD_CAUTIOUS   = 1.0    # 10Y-3M < 1.0  ? flattening
     # Credit stress: HYG underperforms LQD by this much intraday
-    CREDIT_STRESS_PCT = -0.30  # HYG change - LQD change < -0.30% → stress signal
+    CREDIT_STRESS_PCT = -0.30  # HYG change - LQD change < -0.30% ? stress signal
 
     def __init__(self) -> None:
         """Initialize the yield curve client with an empty cache."""
@@ -67,7 +67,7 @@ class YieldCurveClient:
                 signal            -- "risk_on" | "normal" | "cautious" | "risk_off"
                 size_multiplier   -- float to apply alongside VIX factor in position sizing
                 note              -- one-line human readable summary
-            On failure returns a safe default ("normal", ×1.0).
+            On failure returns a safe default ("normal", 1.0).
         """
         now = datetime.now(timezone.utc)
         if (not force_refresh and self._cache is not None and self._cache_ts is not None and
@@ -95,7 +95,7 @@ class YieldCurveClient:
             "credit_delta":      None,
             "signal":            "normal",
             "size_multiplier":   1.0,
-            "note":              "yield curve: data unavailable — using normal sizing",
+            "note":              "yield curve: data unavailable  using normal sizing",
         }
 
         try:
@@ -142,7 +142,7 @@ class YieldCurveClient:
             lqd0 = get_prev_close("LQD")
 
             if tnx is None or irx is None:
-                log.warning("Yield curve: could not fetch TNX/IRX — using normal default")
+                log.warning("Yield curve: could not fetch TNX/IRX  using normal default")
                 return default
 
             spread = round(tnx - irx, 3)
@@ -162,7 +162,7 @@ class YieldCurveClient:
                 signal = "normal"
                 mult   = 1.0
 
-            # Credit stress can escalate cautious → risk_off
+            # Credit stress can escalate cautious ? risk_off
             if credit_delta is not None and credit_delta < self.CREDIT_STRESS_PCT:
                 if signal == "normal":
                     signal = "cautious"
@@ -189,9 +189,9 @@ class YieldCurveClient:
                 "size_multiplier":   mult,
                 "note":              note,
             }
-            log.info("Yield curve: %s [%s ×%.2f]", note, signal.upper(), mult)
+            log.info("Yield curve: %s [%s %.2f]", note, signal.upper(), mult)
             return result
 
         except Exception as e:
-            log.warning("Yield curve: fetch error — %s. Using normal default.", e)
+            log.warning("Yield curve: fetch error  %s. Using normal default.", e)
             return default

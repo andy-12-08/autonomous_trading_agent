@@ -6,11 +6,18 @@ from core.database import log
 
 
 class ExpectancyEngine:
+    """Compute expectancy, cooling rules, Kelly sizing, and confidence drift."""
+
     _REVENGE_WINDOW_MINUTES = 90
 
     def __init__(self, db_path: str):
-        """Args:
+        """Initialize with the SQLite database used for historical trade queries.
+
+        Args:
             db_path: SQLite path (used for confidence-drift queries).
+
+        Returns:
+            None.
         """
         self.db_path = db_path
 
@@ -98,7 +105,7 @@ class ExpectancyEngine:
             elif streak >= 2 and ts and first_loss_ts:
                 window = abs((first_loss_ts - ts).total_seconds()) / 60
                 if window > self._REVENGE_WINDOW_MINUTES:
-                    # Losses too spread out — don't treat as a session breakdown
+                    # Losses too spread out  don't treat as a session breakdown
                     streak -= 1   # discount the earliest loss outside the window
                     break
 
@@ -157,7 +164,7 @@ class ExpectancyEngine:
             min_sample: Minimum trades per setup type to include in results.
 
         Returns:
-            {setup_type: expectancy_dict} — only setups with >= min_sample trades.
+            {setup_type: expectancy_dict}  only setups with >= min_sample trades.
         """
         from collections import defaultdict
         buckets: dict[str, list[dict]] = defaultdict(list)
@@ -181,8 +188,8 @@ class ExpectancyEngine:
         """Dynamically raise the minimum signal confidence when recent form is poor.
 
         Looks at the last DYNAMIC_WINRATE_LOOKBACK closed trades.
-        If win rate < DYNAMIC_WINRATE_THRESHOLD → raise bar by 1 point.
-        If win rate < DYNAMIC_WINRATE_THRESHOLD - 0.15 → raise bar by 2 points
+        If win rate < DYNAMIC_WINRATE_THRESHOLD ? raise bar by 1 point.
+        If win rate < DYNAMIC_WINRATE_THRESHOLD - 0.15 ? raise bar by 2 points
         (severe slump).
 
         Returns:
@@ -201,13 +208,13 @@ class ExpectancyEngine:
 
         if win_rate < (config.DYNAMIC_WINRATE_THRESHOLD - 0.15):
             bar = config.MIN_SIGNAL_CONFIDENCE + 2
-            log.warning("Dynamic confidence bar RAISED to %d/10 — severe slump WR=%.0f%%",
+            log.warning("Dynamic confidence bar RAISED to %d/10  severe slump WR=%.0f%%",
                         bar, win_rate * 100)
             return bar
 
         if win_rate < config.DYNAMIC_WINRATE_THRESHOLD:
             bar = config.MIN_SIGNAL_CONFIDENCE + 1
-            log.warning("Dynamic confidence bar raised to %d/10 — recent WR=%.0f%% below %.0f%% threshold",
+            log.warning("Dynamic confidence bar raised to %d/10  recent WR=%.0f%% below %.0f%% threshold",
                         bar, win_rate * 100, config.DYNAMIC_WINRATE_THRESHOLD * 100)
             return bar
 
@@ -246,7 +253,7 @@ class ExpectancyEngine:
                 cooling[sym] = (
                     f"{sym} cooling off: {wr:.0%} win rate on last "
                     f"{config.SYMBOL_COOLING_LOOKBACK} trades "
-                    f"(< {config.SYMBOL_COOLING_MIN_WIN_RATE:.0%} threshold) — "
+                    f"(< {config.SYMBOL_COOLING_MIN_WIN_RATE:.0%} threshold)  "
                     f"skip until form recovers"
                 )
         return cooling
@@ -256,7 +263,7 @@ class ExpectancyEngine:
 
         Returns {setup_type: reason} for any setup that:
           - Has >= min_sample closed trades with P&L recorded
-          - Has negative expectancy (avg loss > avg win × win rate)
+          - Has negative expectancy (avg loss > avg win  win rate)
           - Is not "unknown" (untagged trades shouldn't suppress valid setups)
 
         The caller blocks new BUYs of that setup type for the rest of the session.
@@ -278,15 +285,15 @@ class ExpectancyEngine:
     def compute_kelly_factor(self, decisions: list[dict]) -> float:
         """Compute the half-Kelly position-size multiplier from historical performance.
 
-        Full Kelly fraction: f = WR − (LR / realized_RR).
-        We apply 0.5× (half-Kelly) for safety and normalize around a reference Kelly
+        Full Kelly fraction: f = WR - (LR / realized_RR).
+        We apply 0.5 (half-Kelly) for safety and normalize around a reference Kelly
         of 0.20 so that a system with "normal" edge maps to factor 1.0.
 
         Returns:
             Multiplier in [0.25, 1.5]:
-              > 1.0  — strong historical edge → size up relative to base
-              = 1.0  — neutral / insufficient data
-              < 1.0  — weak or negative edge → size down as early warning
+              > 1.0   strong historical edge ? size up relative to base
+              = 1.0   neutral / insufficient data
+              < 1.0   weak or negative edge ? size down as early warning
             Requires at least 10 closed trades with P&L recorded.
         """
         closed = [d for d in decisions
@@ -310,9 +317,9 @@ class ExpectancyEngine:
         full_kelly = win_rate - (loss_rate / rr)
 
         if full_kelly <= 0:
-            return 0.5  # negative edge → cut size as a warning signal
+            return 0.5  # negative edge ? cut size as a warning signal
 
-        # Normalize: a system with Kelly=0.20 is "baseline normal" → factor 1.0
+        # Normalize: a system with Kelly=0.20 is "baseline normal" ? factor 1.0
         # factor = (half_kelly) / (reference_kelly * 0.5)
         REFERENCE_KELLY = 0.20
         factor = (full_kelly * 0.5) / (REFERENCE_KELLY * 0.5)
@@ -373,7 +380,7 @@ class ExpectancyEngine:
         for st, exp in sorted(by_setup.items(),
                                key=lambda x: x[1]["expectancy"], reverse=True):
             sign   = "+" if exp["is_positive"] else ""
-            flag   = " ✓" if exp["is_positive"] else " ✗ SUPPRESS"
+            flag   = " ?" if exp["is_positive"] else " ? SUPPRESS"
             lines.append(f"  {st[:28]:28s} | E={sign}{exp['expectancy']:.2f} "
                          f"WR={exp['win_rate']:.0%} "
                          f"avgW=${exp['avg_win']:.0f} avgL=${exp['avg_loss']:.0f} "

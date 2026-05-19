@@ -1,8 +1,7 @@
-"""Full validation — no orders placed."""
+"""Full validation  no orders placed."""
 import config
 from core.database import Database
 from risk.manager import RiskManager as rm
-from risk.bucket_manager import BucketManager as bm
 from risk.gfv_tracker import GFVTracker
 from analysis.signal_scorer import SignalScorer as scorer
 from risk.expectancy import ExpectancyEngine
@@ -16,7 +15,7 @@ print("DB init OK")
 
 exp = ExpectancyEngine(config.DB_PATH)
 
-# ── signal_scorer ─────────────────────────────────────────────────────────────
+# -- signal_scorer -------------------------------------------------------------
 good_sig = {
     "price": 185.0, "ema9": 186.0, "ema21": 184.0, "ema50": 182.0,
     "macd_hist": 0.3, "macd_cross": "bullish", "rsi": 52,
@@ -26,7 +25,7 @@ good_sig = {
 score, ev = scorer.score_setup(good_sig)
 cls       = scorer.classify(score)
 print(f"Good setup score={score} class={cls}  top ev: {ev[:3]}")
-assert score >= 6.5, f"Good setup should score ≥6.5, got {score}"
+assert score >= 6.5, f"Good setup should score =6.5, got {score}"
 
 bad_sig = {
     "price": 185.0, "ema9": 183.0, "ema21": 185.0, "ema50": 187.0,
@@ -53,11 +52,11 @@ print(f"filter_watchlist: {len(passed)}/2 passed. signal_evidence present: {bool
 midday_passed = scorer.filter_watchlist(items, midday=True)
 print(f"Midday filter: {len(midday_passed)}/2 passed (bar=7.5)")
 
-# ── volatility regime ─────────────────────────────────────────────────────────
-f_normal,  l1 = rm.volatility_size_factor(atr=1.5, price=185)     # 0.8% → normal
-f_elevated, l2 = rm.volatility_size_factor(atr=3.0, price=185)    # 1.6% → elevated
-f_high,     l3 = rm.volatility_size_factor(atr=5.5, price=185)    # 3.0% → high
-f_extreme,  l4 = rm.volatility_size_factor(atr=8.0, price=185)    # 4.3% → extreme
+# -- volatility regime ---------------------------------------------------------
+f_normal,  l1 = rm.volatility_size_factor(atr=1.5, price=185)     # 0.8% ? normal
+f_elevated, l2 = rm.volatility_size_factor(atr=3.0, price=185)    # 1.6% ? elevated
+f_high,     l3 = rm.volatility_size_factor(atr=5.5, price=185)    # 3.0% ? high
+f_extreme,  l4 = rm.volatility_size_factor(atr=8.0, price=185)    # 4.3% ? extreme
 print(f"Vol regimes: normal={f_normal}({l1}) elevated={f_elevated}({l2}) "
       f"high={f_high}({l3}) extreme={f_extreme}({l4})")
 assert f_normal == 1.00
@@ -70,21 +69,21 @@ assert rm.is_too_volatile(atr=10.0, price=185)    # 5.4%
 assert not rm.is_too_volatile(atr=3.0, price=185) # 1.6%
 print("is_too_volatile: OK")
 
-# ── calc_qty: ATR reduces qty in high-vol ─────────────────────────────────────
+# -- calc_qty: ATR reduces qty in high-vol -------------------------------------
 qty_normal  = rm.calc_qty(185, 181.3, 4000, 0, 10000, atr=1.5)
 qty_extreme = rm.calc_qty(185, 181.3, 4000, 0, 10000, atr=8.0)
 assert qty_extreme <= qty_normal, f"Extreme vol should reduce qty: {qty_extreme} vs {qty_normal}"
 print(f"ATR-adjusted sizing: normal_qty={qty_normal}  extreme_qty={qty_extreme}")
 
-# ── exposure cap ──────────────────────────────────────────────────────────────
+# -- exposure cap --------------------------------------------------------------
 ok_exp, _ = rm.approve_buy("AAPL", 185, 5, 181,
     settled_cash=4000, deployed_today=2900, num_positions=1,
     daily_pnl=0, total_equity=10000, trades_today=0,
     reward_to_risk=2.5, signal_confidence=8, vol_ratio=1.5, rsi=52)
-assert not ok_exp, "2900 + 925 > exposure cap — should be vetoed"
+assert not ok_exp, "2900 + 925 > exposure cap  should be vetoed"
 print(f"Exposure cap: correctly vetoed at $2900 deployed")
 
-# ── expectancy tracker ────────────────────────────────────────────────────────
+# -- expectancy tracker --------------------------------------------------------
 fake_decisions = [
     {"action": "SELL", "pnl":  80},
     {"action": "SELL", "pnl":  60},
@@ -104,7 +103,7 @@ print(f"Expectancy: {exp_data['expectancy']:.2f} | WR={exp_data['win_rate']:.0%}
 assert exp_data["is_positive"]
 print(f"Expectancy report: {exp.expectancy_report(fake_decisions)}")
 
-# ── consecutive loss guard ────────────────────────────────────────────────────
+# -- consecutive loss guard ----------------------------------------------------
 losing_run = [
     {"action": "SELL", "pnl": -20},
     {"action": "SELL", "pnl": -30},
@@ -122,9 +121,9 @@ assert ok_rtg2, f"3 losses + conf=9 should be allowed: {r_rtg2}"
 ok_rtg3, _ = exp.check_revenge_trade_guard(0, signal_confidence=7)
 assert ok_rtg3, "No losses should always pass"
 
-print(f"Revenge-trade guard: 3 losses conf=7 → blocked | conf=9 → allowed")
+print(f"Revenge-trade guard: 3 losses conf=7 ? blocked | conf=9 ? allowed")
 
-# ── volume window check ───────────────────────────────────────────────────────
+# -- volume window check -------------------------------------------------------
 def _is_high_volume(hour: int, minute: int) -> bool:
     cur = hour * 60 + minute
     for sh, sm, eh, em in config.HIGH_VOLUME_WINDOWS:
@@ -139,4 +138,4 @@ assert _is_high_volume(14, 45),   "14:45 should be high-volume"
 assert not _is_high_volume(13, 0), "13:00 should be midday"
 print("High-volume window checks: OK")
 
-print("\nAll validation checks passed ✓")
+print("\nAll validation checks passed ?")

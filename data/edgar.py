@@ -2,13 +2,13 @@
 SEC EDGAR real-time 8-K filing gate.
 
 8-K filings are material event disclosures: earnings, FDA decisions, M&A, CFO changes,
-analyst restatements. A bad 8-K can drop a stock 10–20% in minutes. A good one can
-spike it — but a technical setup that looks perfect can be building toward a known
+analyst restatements. A bad 8-K can drop a stock 1020% in minutes. A good one can
+spike it  but a technical setup that looks perfect can be building toward a known
 negative that insiders are selling ahead of.
 
 We check EDGAR's full-text search API (no auth required, free) before executing any BUY.
 If a fresh 8-K was filed within the last LOOKBACK_HOURS for the target symbol, the trade
-is vetoed — the event invalidates the technical thesis.
+is vetoed  the event invalidates the technical thesis.
 
 URL: https://efts.sec.gov/LATEST/search-index?q=%22AAPL%22&forms=8-K&dateRange=custom&startdt=YYYY-MM-DD&enddt=YYYY-MM-DD
 """
@@ -24,7 +24,7 @@ class EdgarClient:
     filings before any BUY order is executed. A same-day 8-K vetoes the trade
     because the material event invalidates the technical thesis.
 
-    Cache TTL is 15 minutes per symbol — 8-K data is near-realtime but one
+    Cache TTL is 15 minutes per symbol  8-K data is near-realtime but one
     check per scan cycle is sufficient.
     """
 
@@ -32,7 +32,7 @@ class EdgarClient:
     _TIMEOUT = 6
 
     LOOKBACK_HOURS     = 2     # veto if 8-K filed in the last 2 hours
-    _CACHE_TTL_SECONDS = 900   # 15 min — one check per cycle is enough
+    _CACHE_TTL_SECONDS = 900   # 15 min  one check per cycle is enough
 
     def __init__(self) -> None:
         """Initialize the EDGAR client with an empty per-symbol cache."""
@@ -88,8 +88,8 @@ class EdgarClient:
                 headers={"User-Agent": "TradingBot/1.0 research@example.com"},
             )
             if resp.status_code != 200:
-                log.debug("EDGAR: HTTP %d for %s — allowing trade", resp.status_code, symbol)
-                return False, "EDGAR unreachable — allowing"
+                log.debug("EDGAR: HTTP %d for %s  allowing trade", resp.status_code, symbol)
+                return False, "EDGAR unreachable  allowing"
 
             hits = resp.json().get("hits", {}).get("hits", [])
             if not hits:
@@ -110,12 +110,12 @@ class EdgarClient:
                     fresh.append("unknown date")
 
             if fresh:
-                reason = f"Fresh 8-K filing today for {symbol} — material event risk: {fresh[0]}"
+                reason = f"Fresh 8-K filing today for {symbol}  material event risk: {fresh[0]}"
                 log.warning("EDGAR 8-K veto: %s", reason)
                 return True, reason
 
             return False, f"8-K exists but outside {self.LOOKBACK_HOURS}h window"
 
         except Exception as e:
-            log.debug("EDGAR: error checking %s: %s — allowing trade", symbol, e)
-            return False, "EDGAR error — allowing"
+            log.debug("EDGAR: error checking %s: %s  allowing trade", symbol, e)
+            return False, "EDGAR error  allowing"

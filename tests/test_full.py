@@ -2,21 +2,21 @@
 Full pre-live test suite.
 
 Sections:
-  1. Syntax / import check — every module must load cleanly
-  2. External API endpoints — ping every data source
-  3. Risk manager — all 20 veto rules
-  4. Signal scorer — scoring logic + filter gate
-  5. Indicators — liquidity sweep + FVG + key levels
-  6. Expectancy — Kelly, consecutive-loss window, setup suppression
-  7. Bucket manager — diversification + sector strength
-  8. Dark pool — FINRA CNMS parse
-  9. Pre-market — extended-hours levels
- 10. Yield curve — TNX/IRX/HYG/LQD
- 11. Short interest — yfinance info
- 12. EDGAR — 8-K gate (live + cache)
- 13. Screener — universe build (snapshot screen)
- 14. Alpaca — account, positions, quotes, bars, order capability
- 15. Session overrides — round-trip load/apply
+  1. Syntax / import check  every module must load cleanly
+  2. External API endpoints  ping every data source
+  3. Risk manager  all 20 veto rules
+  4. Signal scorer  scoring logic + filter gate
+  5. Indicators  liquidity sweep + FVG + key levels
+  6. Expectancy  Kelly, consecutive-loss window, setup suppression
+  7. Bucket manager  diversification + sector strength
+  8. Dark pool  FINRA CNMS parse
+  9. Pre-market  extended-hours levels
+ 10. Yield curve  TNX/IRX/HYG/LQD
+ 11. Short interest  yfinance info
+ 12. EDGAR  8-K gate (live + cache)
+ 13. Screener  universe build (snapshot screen)
+ 14. Alpaca  account, positions, quotes, bars, order capability
+ 15. Session overrides  round-trip load/apply
 """
 import sys
 import traceback
@@ -53,9 +53,9 @@ def section(title: str):
     print(f"{'='*60}")
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 1. IMPORT CHECK
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("1. MODULE IMPORT CHECK")
 
 import config
@@ -83,8 +83,8 @@ new_modules = [
     "data.edgar",
     "trading.session_overrides",
     "trading.notifier",
-    "agents.algo_decisions",
-    "agents.algo_analyst",
+    "algo.algo_decisions",
+    "algo.algo_analyst",
     "trading.orchestrator",
 ]
 for mod in new_modules:
@@ -92,9 +92,9 @@ for mod in new_modules:
 
 logging.disable(logging.NOTSET)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 2. EXTERNAL API ENDPOINTS
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("2. EXTERNAL API ENDPOINTS")
 import requests
 from data.dark_pool import DarkPoolClient
@@ -120,15 +120,15 @@ alpaca_headers = {
 }
 
 endpoints = [
-    ("Alpaca paper API — account",
+    ("Alpaca paper API  account",
      "https://paper-api.alpaca.markets/v2/account", alpaca_headers, None, "status"),
-    ("Alpaca data — most-actives",
+    ("Alpaca data  most-actives",
      "https://data.alpaca.markets/v1beta1/screener/stocks/most-actives",
      alpaca_headers, {"by": "volume", "top": 5}, "most_actives"),
-    ("Alpaca data — movers",
+    ("Alpaca data  movers",
      "https://data.alpaca.markets/v1beta1/screener/stocks/movers",
      alpaca_headers, {"top": 5}, "gainers"),
-    ("Alpaca data — news",
+    ("Alpaca data  news",
      "https://data.alpaca.markets/v1beta1/news",
      alpaca_headers, {"symbols": "AAPL", "limit": 1}, "news"),
 ]
@@ -161,10 +161,10 @@ check("yfinance ^TNX (10Y yield)",
 check("yfinance HYG 2d bars",
       lambda: yf.download("HYG", period="2d", interval="1d", progress=False).empty is False)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 3. RISK MANAGER
-# ─────────────────────────────────────────────────────────────
-section("3. RISK MANAGER — VETO RULES")
+# -------------------------------------------------------------
+section("3. RISK MANAGER  VETO RULES")
 from risk.manager import RiskManager as rm
 
 def rm_check(name, expected_ok, **kwargs):
@@ -193,7 +193,7 @@ rm_check("volume too low",                   False, vol_ratio=0.7)
 rm_check("spread too wide",                  False, spread_pct=0.005)
 rm_check("price within 0.5% of resistance", False,
          key_levels={"nearest_resistance": 100.4})
-rm_check("resistance 1% away → allowed",    True,
+rm_check("resistance 1% away ? allowed",    True,
          key_levels={"nearest_resistance": 101.5})
 
 # calc_qty basic
@@ -221,9 +221,9 @@ def test_sl_tp():
     return f"SL={sl:.2f} TP={tp:.2f} RR={rr:.2f}"
 check("rm.compute_stop_take_profit RR>=2.0", test_sl_tp)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 4. SIGNAL SCORER
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("4. SIGNAL SCORER")
 from analysis.signal_scorer import SignalScorer as scorer
 
@@ -243,7 +243,7 @@ def test_momentum_score():
     score, ev = scorer.score_setup(sig, {}, {})
     assert score >= 6.0, f"Strong momentum signal should score >=6.0, got {score}"
     return f"score={score:.1f} evidence={ev[0]}"
-check("momentum scorer — strong signal >=6.0", test_momentum_score)
+check("momentum scorer  strong signal >=6.0", test_momentum_score)
 
 def test_filter_drops_low_scores():
     weak_item = {
@@ -290,10 +290,10 @@ def test_gap_and_go_blocked_after_11():
         return "low vol_ratio correctly blocked past 11AM gate"
 check("gap-and-go still blocked after 11AM with vol_ratio<3.0", test_gap_and_go_blocked_after_11)
 
-# ─────────────────────────────────────────────────────────────
-# 5. INDICATORS — LIQUIDITY SWEEP + FVG
-# ─────────────────────────────────────────────────────────────
-section("5. INDICATORS — LIQUIDITY SWEEP & FVG")
+# -------------------------------------------------------------
+# 5. INDICATORS  LIQUIDITY SWEEP + FVG
+# -------------------------------------------------------------
+section("5. INDICATORS  LIQUIDITY SWEEP & FVG")
 from analysis.indicators import IndicatorEngine as ind
 import pandas as pd
 import numpy as np
@@ -321,14 +321,14 @@ def test_sweep_detected():
     assert detected, f"Sweep should be detected: {result}"
     assert result["stop_beyond"] < result["sweep_low"], "Stop must be below sweep low"
     return f"sweep_low={result['sweep_low']:.2f} stop={result['stop_beyond']:.2f}"
-check("detect_liquidity_sweep — sweep detected", test_sweep_detected)
+check("detect_liquidity_sweep  sweep detected", test_sweep_detected)
 
 def test_sweep_not_triggered_on_clean_data():
     df = make_df(30)
     result = ind.detect_liquidity_sweep(df)
     detected = result.get("liquidity_sweep_detected", False)
     return f"sweep_detected={detected} on clean trending data"
-check("detect_liquidity_sweep — no false positive on clean data", test_sweep_not_triggered_on_clean_data)
+check("detect_liquidity_sweep  no false positive on clean data", test_sweep_not_triggered_on_clean_data)
 
 def test_fvg_detected():
     df = make_df(20)
@@ -359,9 +359,9 @@ def test_get_key_levels():
     return f"signal_summary keys={len(sig)}"
 check("get_signal_summary returns valid dict", test_get_key_levels)
 
-# ─────────────────────────────────────────────────────────────
-# 6. EXPECTANCY — KELLY + 90-MIN WINDOW
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# 6. EXPECTANCY  KELLY + 90-MIN WINDOW
+# -------------------------------------------------------------
 section("6. EXPECTANCY & REVENGE TRADE GUARD")
 from risk.expectancy import ExpectancyEngine
 exp = ExpectancyEngine(":memory:")
@@ -369,8 +369,8 @@ exp = ExpectancyEngine(":memory:")
 def test_kelly_no_data():
     factor = exp.compute_kelly_factor([])
     assert factor == 1.0, f"No data should return 1.0, got {factor}"
-    return f"kelly={factor} (no data → neutral)"
-check("compute_kelly_factor — no data returns 1.0", test_kelly_no_data)
+    return f"kelly={factor} (no data ? neutral)"
+check("compute_kelly_factor  no data returns 1.0", test_kelly_no_data)
 
 def test_kelly_positive_edge():
     decisions = [
@@ -380,8 +380,8 @@ def test_kelly_positive_edge():
     ]
     factor = exp.compute_kelly_factor(decisions)
     assert 0.25 <= factor <= 1.5, f"Kelly factor out of range: {factor}"
-    return f"kelly={factor:.3f} (7W/3L → positive edge)"
-check("compute_kelly_factor — positive edge in range", test_kelly_positive_edge)
+    return f"kelly={factor:.3f} (7W/3L ? positive edge)"
+check("compute_kelly_factor  positive edge in range", test_kelly_positive_edge)
 
 now_utc = datetime.now(timezone.utc)
 
@@ -393,8 +393,8 @@ def test_rapid_losses_trigger():
     ]
     streak = exp.get_recent_consecutive_losses(decisions)
     assert streak == 3, f"3 rapid losses should count as streak=3, got {streak}"
-    return f"streak={streak} (3 losses in 35 min → full trigger)"
-check("consecutive losses — rapid-fire counted as streak=3", test_rapid_losses_trigger)
+    return f"streak={streak} (3 losses in 35 min ? full trigger)"
+check("consecutive losses  rapid-fire counted as streak=3", test_rapid_losses_trigger)
 
 def test_spread_losses_discounted():
     decisions = [
@@ -404,8 +404,8 @@ def test_spread_losses_discounted():
     ]
     streak = exp.get_recent_consecutive_losses(decisions)
     assert streak < 3, f"Spread losses over 3h should discount to streak<3, got {streak}"
-    return f"streak={streak} (losses spread 3h+ → discounted)"
-check("consecutive losses — spread over 3h discounted to <3", test_spread_losses_discounted)
+    return f"streak={streak} (losses spread 3h+ ? discounted)"
+check("consecutive losses  spread over 3h discounted to <3", test_spread_losses_discounted)
 
 def test_revenge_guard_stands_aside():
     allowed, reason = exp.check_revenge_trade_guard(3, signal_confidence=7)
@@ -420,9 +420,9 @@ def test_revenge_guard_allows_high_conf():
     return f"allowed with conf={required}"
 check("revenge guard allows high-confidence trade after 3 losses", test_revenge_guard_allows_high_conf)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 7. BUCKET MANAGER
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("7. BUCKET MANAGER")
 from risk.bucket_manager import BucketManager as bm
 
@@ -430,21 +430,21 @@ def test_empty_bucket_allowed():
     ok, reason = bm.bucket_is_open("AAPL", [])
     assert ok, f"Empty bucket should allow entry: {reason}"
     return reason
-check("bucket_is_open — empty bucket allowed", test_empty_bucket_allowed)
+check("bucket_is_open  empty bucket allowed", test_empty_bucket_allowed)
 
 def test_occupied_bucket_blocked():
     positions = [{"symbol": "AAPL"}]   # AAPL is in 'tech'
     ok, reason = bm.bucket_is_open("MSFT", positions, signal_confidence=7)
     assert not ok, f"Same bucket should block: {reason}"
     return reason[:60]
-check("bucket_is_open — occupied bucket blocked (conf=7)", test_occupied_bucket_blocked)
+check("bucket_is_open  occupied bucket blocked (conf=7)", test_occupied_bucket_blocked)
 
 def test_high_conviction_override():
     positions = [{"symbol": "AAPL"}]
     ok, reason = bm.bucket_is_open("MSFT", positions, signal_confidence=9)
     assert ok, f"High-conviction should override: {reason}"
     return reason[:60]
-check("bucket_is_open — high-conviction (9/10) overrides", test_high_conviction_override)
+check("bucket_is_open  high-conviction (9/10) overrides", test_high_conviction_override)
 
 def test_sector_strength():
     snaps = {
@@ -456,11 +456,11 @@ def test_sector_strength():
     assert strength["tech"] > 0, f"Tech should be leading: {strength}"
     assert strength["finance"] < strength["tech"], "Finance should lag tech"
     return f"tech={strength['tech']:+.2f}% finance={strength['finance']:+.2f}%"
-check("get_sector_strength — relative vs SPY correct", test_sector_strength)
+check("get_sector_strength  relative vs SPY correct", test_sector_strength)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 8. DARK POOL
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("8. DARK POOL (FINRA CNMS)")
 dp = DarkPoolClient()
 
@@ -469,7 +469,7 @@ def test_dark_pool_loads():
     assert isinstance(data, dict), "Should return dict"
     assert len(data) > 100, f"Expected >100 symbols, got {len(data)}"
     return f"{len(data)} symbols loaded"
-check("dark pool — FINRA file loads and parses", test_dark_pool_loads)
+check("dark pool  FINRA file loads and parses", test_dark_pool_loads)
 
 def test_dark_pool_signal_values():
     data = dp.load_dark_pool_data()
@@ -478,17 +478,17 @@ def test_dark_pool_signal_values():
         assert 0 <= d["short_vol_pct"] <= 1, f"short_vol_pct out of range: {d}"
         assert d["signal"] in ("accumulation", "distribution", "neutral")
     return f"all signals valid in sample of {len(sample)}"
-check("dark pool — signal values are valid", test_dark_pool_signal_values)
+check("dark pool  signal values are valid", test_dark_pool_signal_values)
 
 def test_dark_pool_known_symbols():
     signals = dp.get_dark_pool_signals(["AAPL", "NVDA", "SPY"])
     found   = list(signals.keys())
     return f"found {len(found)}/3: {found}"
-check("dark pool — get_dark_pool_signals for AAPL/NVDA/SPY", test_dark_pool_known_symbols)
+check("dark pool  get_dark_pool_signals for AAPL/NVDA/SPY", test_dark_pool_known_symbols)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 9. PRE-MARKET
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("9. PRE-MARKET LEVELS")
 from data.pre_market import PreMarketAnalyzer
 pm_mod = PreMarketAnalyzer()
@@ -503,19 +503,19 @@ def test_premarket_fetch():
         assert d["gap_direction"] in ("up", "down", "flat")
     return f"{len(data)} symbols: " + ", ".join(
         f"{s}({d['gap_pct']:+.1f}%)" for s, d in data.items())
-check("pre_market — fetches levels for AAPL/NVDA/TSLA", test_premarket_fetch)
+check("pre_market  fetches levels for AAPL/NVDA/TSLA", test_premarket_fetch)
 
 def test_premarket_key_levels():
     levels = pm_mod.get_premarket_key_levels("AAPL")
     if levels:
         assert "pre_market_high" in levels and "pre_market_low" in levels
         return f"pm_high={levels['pre_market_high']} pm_low={levels['pre_market_low']}"
-    return "no pre-market data (market closed — acceptable)"
-check("pre_market — get_premarket_key_levels AAPL", test_premarket_key_levels)
+    return "no pre-market data (market closed  acceptable)"
+check("pre_market  get_premarket_key_levels AAPL", test_premarket_key_levels)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 10. YIELD CURVE
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("10. YIELD CURVE + CREDIT SPREADS")
 from data.yield_curve import YieldCurveClient
 yc_mod = YieldCurveClient()
@@ -530,19 +530,19 @@ def test_yield_curve_fetch():
     assert tnx and tnx > 0, f"10Y yield should be positive, got {tnx}"
     return (f"10Y={tnx:.2f}% 3M={irx:.2f}% "
             f"spread={data['spread_10y_3m']:+.2f}% "
-            f"signal={data['signal']} ×{data['size_multiplier']:.2f}")
-check("yield_curve — live TNX/IRX/HYG/LQD data", test_yield_curve_fetch)
+            f"signal={data['signal']} {data['size_multiplier']:.2f}")
+check("yield_curve  live TNX/IRX/HYG/LQD data", test_yield_curve_fetch)
 
 def test_yield_curve_cached():
     d1 = yc_mod.get_yield_curve()
     d2 = yc_mod.get_yield_curve()   # should hit cache
     assert d1["signal"] == d2["signal"], "Cache should return same signal"
     return "cache hit returns consistent result"
-check("yield_curve — cache returns same result", test_yield_curve_cached)
+check("yield_curve  cache returns same result", test_yield_curve_cached)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 11. SHORT INTEREST
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("11. SHORT INTEREST")
 from data.short_interest import ShortInterestClient
 si_mod = ShortInterestClient()
@@ -555,11 +555,11 @@ def test_short_interest_fetch():
         assert 0 <= d["short_pct_float"] <= 1.0, f"{sym}: pct out of range"
         assert d["signal"] in ("squeeze_risk", "elevated", "normal", "low")
     return ", ".join(f"{s}:{d['short_pct_float']:.1%}[{d['signal']}]" for s, d in data.items())
-check("short_interest — fetches data for AAPL/TSLA/NVDA", test_short_interest_fetch)
+check("short_interest  fetches data for AAPL/TSLA/NVDA", test_short_interest_fetch)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 12. EDGAR 8-K GATE
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("12. SEC EDGAR 8-K GATE")
 from data.edgar import EdgarClient
 edgar_client = EdgarClient()
@@ -567,13 +567,13 @@ edgar_client = EdgarClient()
 def test_edgar_no_veto_normal():
     veto, reason = edgar_client.check_fresh_8k("SPY")
     return f"veto={veto} reason={reason}"
-check("edgar — SPY: no 8-K veto expected", test_edgar_no_veto_normal)
+check("edgar  SPY: no 8-K veto expected", test_edgar_no_veto_normal)
 
 def test_edgar_cache():
     edgar_client.check_fresh_8k("AAPL")   # prime cache
     veto, reason = edgar_client.check_fresh_8k("AAPL")  # should hit cache
     return f"veto={veto} (cache hit)"
-check("edgar — cache works (second call hits cache)", test_edgar_cache)
+check("edgar  cache works (second call hits cache)", test_edgar_cache)
 
 def test_edgar_fail_open():
     orig = EdgarClient._BASE
@@ -582,11 +582,11 @@ def test_edgar_fail_open():
     edgar_client._BASE = orig
     assert not veto, f"Should fail open (veto=False), got veto={veto}"
     return f"failed open: {reason}"
-check("edgar — network error fails open (no veto)", test_edgar_fail_open)
+check("edgar  network error fails open (no veto)", test_edgar_fail_open)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 13. SCREENER
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("13. SCREENER")
 from analysis.screener import Screener
 from core.broker import AlpacaBroker
@@ -599,13 +599,13 @@ def test_most_actives():
     assert len(syms) >= 5, f"Expected >=5 symbols, got {len(syms)}"
     assert all(s.isalpha() and len(s) <= 5 for s in syms), "Bad symbol format"
     return f"{len(syms)} symbols: {syms[:5]}"
-check("screener — most-actives returns valid symbols", test_most_actives)
+check("screener  most-actives returns valid symbols", test_most_actives)
 
 def test_gainers():
     syms = screener_obj._fetch_gainers(top=10)
     assert isinstance(syms, list)
     return f"{len(syms)} gainers fetched"
-check("screener — gainers fetches OK", test_gainers)
+check("screener  gainers fetches OK", test_gainers)
 
 def test_universe_build():
     universe = screener_obj.build_universe()
@@ -614,11 +614,11 @@ def test_universe_build():
         f"Universe ({len(universe)}) should be >= watchlist ({len(config.WATCHLIST)})"
     assert all(isinstance(s, str) and s.isalpha() for s in universe[:20])
     return f"{len(universe)} symbols in universe"
-check("screener — build_universe returns full universe", test_universe_build)
+check("screener  build_universe returns full universe", test_universe_build)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 14. ALPACA BROKER
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("14. ALPACA BROKER")
 broker = _broker   # reuse instance from screener section
 
@@ -628,42 +628,42 @@ def test_alpaca_account():
     equity = float(getattr(acct, "equity", 0) or 0)
     assert equity > 0, f"Equity should be >0, got {equity}"
     return f"equity=${equity:,.2f}"
-check("alpaca — get_account returns equity", test_alpaca_account)
+check("alpaca  get_account returns equity", test_alpaca_account)
 
 def test_alpaca_positions():
     positions = broker.get_positions()
     assert isinstance(positions, dict)
     return f"{len(positions)} open positions"
-check("alpaca — get_positions returns dict", test_alpaca_positions)
+check("alpaca  get_positions returns dict", test_alpaca_positions)
 
 def test_alpaca_quote():
     quote = broker.get_latest_quote("AAPL")
     if quote is None:
-        return "None returned (market closed — correct; bid/ask are 0 when not trading)"
+        return "None returned (market closed  correct; bid/ask are 0 when not trading)"
     assert quote["bid"] > 0 and quote["ask"] > 0
     assert quote["spread_pct"] >= 0
     return f"bid={quote['bid']:.2f} ask={quote['ask']:.2f} spread={quote['spread_pct']:.4f}"
-check("alpaca — get_latest_quote AAPL (None OK outside hours)", test_alpaca_quote)
+check("alpaca  get_latest_quote AAPL (None OK outside hours)", test_alpaca_quote)
 
 def test_alpaca_price():
     price = broker.get_latest_price("AAPL")
     assert price and price > 0
     return f"price=${price:.2f}"
-check("alpaca — get_latest_price AAPL", test_alpaca_price)
+check("alpaca  get_latest_price AAPL", test_alpaca_price)
 
 def test_alpaca_bars():
     df = broker.get_bars("AAPL", "5Min", days=2)
     assert not df.empty, "Should return bars"
     assert len(df) >= 10, f"Expected >=10 bars, got {len(df)}"
     return f"{len(df)} bars"
-check("alpaca — get_bars AAPL 5Min", test_alpaca_bars)
+check("alpaca  get_bars AAPL 5Min", test_alpaca_bars)
 
 def test_alpaca_bars_multi():
     bars = broker.get_bars_multi(["AAPL", "MSFT"], "5Min", days=2)
     assert isinstance(bars, dict)
     assert "AAPL" in bars or "MSFT" in bars
     return f"multi-bars: {list(bars.keys())}"
-check("alpaca — get_bars_multi AAPL+MSFT", test_alpaca_bars_multi)
+check("alpaca  get_bars_multi AAPL+MSFT", test_alpaca_bars_multi)
 
 def test_alpaca_snapshots():
     snaps = broker.get_snapshots_bulk(["AAPL", "NVDA", "SPY"])
@@ -673,23 +673,23 @@ def test_alpaca_snapshots():
         assert d["price"] > 0
     return f"{len(snaps)} snapshots: " + ", ".join(
         f"{s}=${d['price']:.2f}" for s, d in snaps.items())
-check("alpaca — get_snapshots_bulk AAPL/NVDA/SPY", test_alpaca_snapshots)
+check("alpaca  get_snapshots_bulk AAPL/NVDA/SPY", test_alpaca_snapshots)
 
 def test_alpaca_market_open():
     is_open = broker.is_market_open()
     return f"market_open={is_open}"
-check("alpaca — is_market_open returns bool", test_alpaca_market_open)
+check("alpaca  is_market_open returns bool", test_alpaca_market_open)
 
 def test_alpaca_tradeable_symbols():
     syms = broker.get_all_tradeable_symbols()
     assert isinstance(syms, list)
     assert len(syms) > 1000, f"Expected >1000 symbols, got {len(syms)}"
     return f"{len(syms)} tradeable symbols"
-check("alpaca — get_all_tradeable_symbols >1000", test_alpaca_tradeable_symbols)
+check("alpaca  get_all_tradeable_symbols >1000", test_alpaca_tradeable_symbols)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # 15. SESSION OVERRIDES
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("15. SESSION OVERRIDES")
 from trading.session_overrides import SessionOverrides
 import config as _config_module
@@ -700,7 +700,7 @@ def test_session_overrides_defaults():
     assert so.get("signal_score_min_normal") == config.NORMAL_MIN_SIGNAL_SCORE
     assert so.get("signal_score_min_midday") == config.MIDDAY_MIN_SIGNAL_SCORE
     return "defaults correct"
-check("session_overrides — defaults match config", test_session_overrides_defaults)
+check("session_overrides  defaults match config", test_session_overrides_defaults)
 
 def test_session_overrides_apply():
     plan = {"threshold_overrides": {"signal_score_min_normal": 7.5}}
@@ -709,11 +709,11 @@ def test_session_overrides_apply():
         f"Expected 7.5, got {so.get('signal_score_min_normal')}"
     so.reset()
     return "plan override applied and reset correctly"
-check("session_overrides — apply plan override + reset", test_session_overrides_apply)
+check("session_overrides  apply plan override + reset", test_session_overrides_apply)
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # SUMMARY
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 section("SUMMARY")
 passed = sum(1 for _, ok, _ in results if ok)
 failed = sum(1 for _, ok, _ in results if not ok)

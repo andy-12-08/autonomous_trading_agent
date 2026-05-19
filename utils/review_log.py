@@ -7,13 +7,20 @@ from risk.expectancy import ExpectancyEngine
 
 
 class ReviewLog:
+    """Print database-backed performance and risk-review reports to stdout."""
+
     def __init__(self, db_path: str):
-        """Args:
+        """Initialize the review helper with a database path.
+
+        Args:
             db_path: Path to trading_log.db (or equivalent).
+
+        Returns:
+            None.
         """
         self.db_path = db_path
-        self.SEP     = "─" * 72
-        self.SEP2    = "═" * 72
+        self.SEP     = "-" * 72
+        self.SEP2    = "-" * 72
 
     def section(self, title: str) -> None:
         """Args:
@@ -45,14 +52,14 @@ class ReviewLog:
         overall = exp.compute_expectancy(all_decisions)
         if overall:
             sign   = "+" if overall["is_positive"] else ""
-            status = "✓ POSITIVE EDGE" if overall["is_positive"] else "✗ NEGATIVE EDGE — REVIEW STRATEGY"
+            status = "? POSITIVE EDGE" if overall["is_positive"] else "? NEGATIVE EDGE  REVIEW STRATEGY"
             print(f"  Expectancy : {sign}${overall['expectancy']:.2f} per trade  [{status}]")
             print(f"  Win rate   : {overall['win_rate']:.0%}")
             print(f"  Avg win    : ${overall['avg_win']:.2f}")
             print(f"  Avg loss   : ${overall['avg_loss']:.2f}")
             print(f"  Sample     : {overall['total_trades']} closed trades")
         else:
-            print("  Insufficient data (need ≥ 10 closed trades)")
+            print("  Insufficient data (need = 10 closed trades)")
 
         self.section("SETUP-TYPE EXPECTANCY BREAKDOWN")
         by_setup = exp.compute_expectancy_by_setup(all_decisions, min_sample=2)
@@ -62,13 +69,13 @@ class ReviewLog:
             for st, st_exp in sorted(by_setup.items(),
                                       key=lambda x: x[1]["expectancy"], reverse=True):
                 sign = "+" if st_exp["is_positive"] else ""
-                flag = "✓" if st_exp["is_positive"] else "✗ SUPPRESS"
+                flag = "?" if st_exp["is_positive"] else "? SUPPRESS"
                 print(f"  {st[:28]:28s}  {sign}${st_exp['expectancy']:>6.2f}  "
                       f"{st_exp['win_rate']:>4.0%}  "
                       f"${st_exp['avg_win']:>5.0f}  ${st_exp['avg_loss']:>5.0f}  "
                       f"{st_exp['total_trades']:>4}  {flag}")
         else:
-            print("  Insufficient data per setup type (need ≥ 2 trades per type)")
+            print("  Insufficient data per setup type (need = 2 trades per type)")
 
         self.section("DAILY PERFORMANCE HISTORY")
         daily_rows = list(conn.execute(
@@ -84,7 +91,7 @@ class ReviewLog:
                 wr = r["wins"] / r["trades"] if r["trades"] else 0
                 net = r["net_pnl"] or 0
                 total_pnl += net
-                flag = "✓" if net >= 0 else "✗"
+                flag = "?" if net >= 0 else "?"
                 print(f"  {r['date']:12s}  {r['trades']:>6}  {r['wins']:>4}  {r['losses']:>4}  "
                       f"{wr:>4.0%}  ${net:>8.2f}  {flag}")
             print(f"  {self.SEP}")
@@ -100,7 +107,7 @@ class ReviewLog:
         for row in recent:
             r       = dict(row)
             pnl_str = f"${r['pnl']:+.2f}" if r.get("pnl") is not None else "    n/a"
-            setup   = r.get("setup_type") or "—"
+            setup   = r.get("setup_type") or ""
             score   = f"  score={r['signal_score']:.1f}" if r.get("signal_score") is not None else ""
             veto    = f"  [{r['veto_rule']}]" if r.get("veto_rule") else ""
             print(f"  [{r['ts'][:19]}] {r['action']:14s} {r['symbol']:6s} "
@@ -108,9 +115,9 @@ class ReviewLog:
                   f"pnl={pnl_str:>9}  [{setup}]{score}{veto}")
             reason = (r.get("reasoning") or "")[:100]
             if reason:
-                print(f"    → {reason}")
+                print(f"    ? {reason}")
 
-        self.section("YESTERDAY'S MISSED TRADES — SKIP BREAKDOWN")
+        self.section("YESTERDAY'S MISSED TRADES  SKIP BREAKDOWN")
         yesterday = (date.today() - timedelta(days=1)).isoformat()
         skip_rows = conn.execute(
             """SELECT symbol, ts, signal_score, veto_rule, reasoning
@@ -126,7 +133,7 @@ class ReviewLog:
             for row in skip_rows:
                 r = dict(row)
                 sc  = f"{r['signal_score']:.1f}" if r.get("signal_score") is not None else " n/a"
-                vr  = (r.get("veto_rule") or "—")[:20]
+                vr  = (r.get("veto_rule") or "")[:20]
                 rsn = (r.get("reasoning") or "")[:70]
                 print(f"  {r['symbol']:6s}  {sc:>5}  {vr:20s}  {rsn}")
         else:
@@ -155,9 +162,9 @@ class ReviewLog:
             print(f"  Risk posture  : {plan.get('risk_posture', 'N/A')}")
             print(f"  Summary       : {(plan.get('market_summary') or '')[:120]}")
             for w in plan.get("special_warnings", []):
-                print(f"  ⚠ WARNING     : {w}")
+                print(f"  ? WARNING     : {w}")
             for lesson in plan.get("history_lessons", []):
-                print(f"  📖 LESSON     : {lesson}")
+                print(f"  ?? LESSON     : {lesson}")
         else:
             print("  No daily plan for today (morning study hasn't run yet).")
 

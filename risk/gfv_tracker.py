@@ -84,7 +84,7 @@ class GFVTracker:
         conn.commit()
         conn.close()
         if not funded_by_settled:
-            log.warning("GFV-LOCK %s: bought with unsettled proceeds — locked until %s",
+            log.warning("GFV-LOCK %s: bought with unsettled proceeds  locked until %s",
                         symbol, settle)
 
     def remove_buy(self, symbol: str) -> None:
@@ -121,7 +121,7 @@ class GFVTracker:
             return False, "not tracked (assumed settled)"
 
         if row["funded_by_settled"]:
-            return False, "funded by settled cash — no GFV risk"
+            return False, "funded by settled cash  no GFV risk"
 
         settle = date.fromisoformat(row["settlement_date"])
         if datetime.now(config.ET).date() >= settle:

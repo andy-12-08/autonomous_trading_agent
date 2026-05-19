@@ -1,21 +1,21 @@
 """
-Algorithmic decision engine — replaces the LLM trading agent.
+Algorithmic decision engine  replaces the LLM trading agent.
 
 Decision flow per cycle:
   1. HOLD for all open positions (mechanical stops handle exits)
   2. Sort candidates by signal_score descending
   3. Hard instrument veto  (inverse / leveraged / crypto ETFs)
-  4. Signal score floor    (< MIN_BUY_SCORE → SKIP)
+  4. Signal score floor    (< MIN_BUY_SCORE ? SKIP)
   5. Volume profile gate   (POC, value area, LVN)
   6. Setup-type quality gate (momentum, gap_and_go, vwap_reclaim, mean_reversion)
   7. Enrichment signals gate (dark pool distribution, bearish options flow)
-  8. Top MAX_BUYS by score → BUY; everything else → SKIP
+  8. Top MAX_BUYS by score ? BUY; everything else ? SKIP
 """
 
 import config
 from core.database import log
 
-# ── Instrument blocklist ────────────────────────────────────────────────────────
+# -- Instrument blocklist --------------------------------------------------------
 # These instruments are structurally unsuitable for the algo sizing model:
 # inverse ETFs move opposite to our long-only strategy, leveraged ETFs decay
 # and have extreme ATR, crypto ETFs have non-equity risk characteristics.
@@ -30,8 +30,8 @@ BLOCKED_INSTRUMENTS = frozenset({
     "BITO", "IBIT", "MSTU", "MSTX", "FBTC", "ARKB", "EZBC", "HODL",
 })
 
-# ── Score → confidence mapping ─────────────────────────────────────────────────
-# Mirrors the executor's CONFIDENCE_SIZE_SCALE tiers — higher score = bigger size.
+# -- Score ? confidence mapping -------------------------------------------------
+# Mirrors the executor's CONFIDENCE_SIZE_SCALE tiers  higher score = bigger size.
 _SCORE_CONF = [
     (9.5, 9),   # maximum conviction
     (8.5, 8),   # strong
@@ -40,11 +40,11 @@ _SCORE_CONF = [
 ]
 
 MIN_BUY_SCORE = 7.0   # floor below which we never BUY
-MAX_BUYS      = 10    # candidates passed to execution — real cap is MAX_CONCURRENT_POSITIONS
+MAX_BUYS      = 10    # candidates passed to execution  real cap is MAX_CONCURRENT_POSITIONS
 
 
 def _score_to_conf(score: float) -> int:
-    """Map a composite signal score to an integer confidence level (6–9).
+    """Map a composite signal score to an integer confidence level (69).
 
     Uses _SCORE_CONF tiers; returns 6 (minimum passing) when no tier matches.
 
@@ -96,7 +96,7 @@ class AlgoDecisionEngine:
         """Evaluate candidates and open positions; return BUY / SKIP / HOLD dicts.
 
         Args:
-            candidates: Pre-filtered, enriched candidate dicts — any order.
+            candidates: Pre-filtered, enriched candidate dicts  any order.
             open_positions: Current open position snapshots from the broker.
 
         Returns:
@@ -104,7 +104,7 @@ class AlgoDecisionEngine:
         """
         decisions: list[dict] = []
 
-        # ── HOLD all open positions ────────────────────────────────────────────
+        # -- HOLD all open positions --------------------------------------------
         # The position manager's mechanical stops are the real exit logic.
         # We emit HOLD so the executor records the decision for the audit trail.
         for pos in open_positions:
@@ -113,7 +113,7 @@ class AlgoDecisionEngine:
                 "action":            "HOLD",
                 "final_decision":    "HOLD",
                 "signal_confidence": 7,
-                "reason_for_entry":  "Algo: holding — mechanical stops active",
+                "reason_for_entry":  "Algo: holding  mechanical stops active",
             })
 
         open_syms = {p["symbol"] for p in open_positions}
@@ -136,40 +136,40 @@ class AlgoDecisionEngine:
             if sym in open_syms:
                 continue
 
-            # ── Hard instrument veto ───────────────────────────────────────────
+            # -- Hard instrument veto -------------------------------------------
             if sym in BLOCKED_INSTRUMENTS:
                 decisions.append(_skip(sym, 2,
-                    "Blocked: inverse/leveraged/crypto ETF — unsuitable for algo sizing"))
+                    "Blocked: inverse/leveraged/crypto ETF  unsuitable for algo sizing"))
                 continue
 
-            # ── Signal score floor ─────────────────────────────────────────────
+            # -- Signal score floor ---------------------------------------------
             if score < MIN_BUY_SCORE:
                 decisions.append(_skip(sym, max(2, int(score)),
                     f"Score {score:.1f} below minimum {MIN_BUY_SCORE}"))
                 continue
 
-            # ── Volume profile gate ────────────────────────────────────────────
+            # -- Volume profile gate --------------------------------------------
             vp_skip, vp_reason = _volume_profile_gate(sig, score)
             if vp_skip:
                 decisions.append(_skip(sym, 4, vp_reason))
                 continue
 
-            # ── Setup-type quality gate ────────────────────────────────────────
+            # -- Setup-type quality gate ----------------------------------------
             sq_skip, sq_reason = _setup_quality_gate(sig, setup, score)
             if sq_skip:
                 decisions.append(_skip(sym, 5, sq_reason))
                 continue
 
-            # ── Enrichment signals gate ────────────────────────────────────────
+            # -- Enrichment signals gate ----------------------------------------
             es_skip, es_reason = _enrichment_gate(item, score)
             if es_skip:
                 decisions.append(_skip(sym, 5, es_reason))
                 continue
 
-            # ── Top-N cap ─────────────────────────────────────────────────────
+            # -- Top-N cap -----------------------------------------------------
             if buys >= MAX_BUYS:
                 decisions.append(_skip(sym, 5,
-                    f"Score {score:.1f} — outside top {MAX_BUYS} candidates this cycle"))
+                    f"Score {score:.1f}  outside top {MAX_BUYS} candidates this cycle"))
                 continue
 
             conf     = _score_to_conf(score)
@@ -198,7 +198,7 @@ class AlgoDecisionEngine:
         return decisions
 
 
-# ── Gate implementations ────────────────────────────────────────────────────────
+# -- Gate implementations --------------------------------------------------------
 
 def _volume_profile_gate(sig: dict, score: float) -> tuple[bool, str]:
     """Gate on volume profile position relative to POC, value area, and LVN.
@@ -208,11 +208,11 @@ def _volume_profile_gate(sig: dict, score: float) -> tuple[bool, str]:
     patterns.compute_volume_profile() and merged into sig by the scanner.
 
     Rules (in order):
-      below VAL + bearish EMA → institutional supply rejected it → SKIP
-      inside value area without escape velocity → auction chop → SKIP
-        (exception: score ≥ 8.5 AND full EMA bull + above VWAP)
-      near POC without very high score → mean-reversion magnet → SKIP
-        (exception: score ≥ 9.0 OR already above VAH)
+      below VAL + bearish EMA ? institutional supply rejected it ? SKIP
+      inside value area without escape velocity ? auction chop ? SKIP
+        (exception: score = 8.5 AND full EMA bull + above VWAP)
+      near POC without very high score ? mean-reversion magnet ? SKIP
+        (exception: score = 9.0 OR already above VAH)
     """
     above_vwap = bool(sig.get("above_vwap"))
     ema9       = float(sig.get("ema9",  0))
@@ -223,26 +223,26 @@ def _volume_profile_gate(sig: dict, score: float) -> tuple[bool, str]:
     vah = sig.get("vah")
     val = sig.get("val")
 
-    # Below VAL — rejected from the volume cluster; overhead supply is dense
+    # Below VAL  rejected from the volume cluster; overhead supply is dense
     if sig.get("below_value_area") and not ema_bull:
         val_str = f"VAL {float(val):.2f}" if val else "value area low"
-        return True, f"Below {val_str} — rejected from volume support, institutional supply overhead"
+        return True, f"Below {val_str}  rejected from volume support, institutional supply overhead"
 
-    # Inside value area — price is in auction; momentum entries stall here because
+    # Inside value area  price is in auction; momentum entries stall here because
     # the market is still discovering fair value between VAL and VAH.
     # Allow if score >= 7.5 (signal is strong enough to overcome auction friction).
     if sig.get("in_value_area") and not sig.get("above_value_area"):
         if score < 7.5:
             poc_str = f"POC {float(poc):.2f}" if poc else "value area"
             return True, (
-                f"Inside value area ({poc_str}) — auction zone, "
+                f"Inside value area ({poc_str})  auction zone, "
                 "momentum setups stall between VAL and VAH"
             )
 
-    # Near POC — the highest-volume price acts as a gravitational centre.
-    # Score ≥ 9.0 can bypass this gate ONLY when price is at or above the POC
+    # Near POC  the highest-volume price acts as a gravitational centre.
+    # Score = 9.0 can bypass this gate ONLY when price is at or above the POC
     # (i.e. the stock has cleared the max-volume node and is now using it as support).
-    # Buying BELOW the POC means the POC is overhead supply — no score overrides that.
+    # Buying BELOW the POC means the POC is overhead supply  no score overrides that.
     if sig.get("near_poc") and not sig.get("above_value_area"):
         _price    = float(sig.get("price") or 0)
         _poc_val  = float(poc) if poc else 0.0
@@ -251,11 +251,11 @@ def _volume_profile_gate(sig: dict, score: float) -> tuple[bool, str]:
             poc_str = f"POC {_poc_val:.2f}" if _poc_val else ""
             if _below_poc:
                 return True, (
-                    f"Near POC {poc_str} and price {_price:.2f} is below it — "
+                    f"Near POC {poc_str} and price {_price:.2f} is below it  "
                     "buying into overhead supply, high reversion probability"
                 )
             return True, (
-                f"Near POC {poc_str} — max-volume magnet, "
+                f"Near POC {poc_str}  max-volume magnet, "
                 "high reversion probability before any continuation move"
             )
 
@@ -267,12 +267,12 @@ def _setup_quality_gate(sig: dict, setup: str, score: float) -> tuple[bool, str]
 
     Each setup type has structural requirements that the signal scorer already
     rewards/penalises, but a failed structural requirement is a hard veto here
-    regardless of score — we won't enter a gap-and-go that hasn't gapped, etc.
+    regardless of score  we won't enter a gap-and-go that hasn't gapped, etc.
 
-    momentum      — EMA9 > EMA21 + price above VWAP (both required)
-    gap_and_go    — gap ≥ config minimum + price cleared first-bar high or ORB-30
-    vwap_reclaim  — price confirmed above VWAP; fresh cross preferred at lower scores
-    mean_reversion — RSI in recovery zone (≤ 55) + anchored near POC or value area
+    momentum       EMA9 > EMA21 + price above VWAP (both required)
+    gap_and_go     gap = config minimum + price cleared first-bar high or ORB-30
+    vwap_reclaim   price confirmed above VWAP; fresh cross preferred at lower scores
+    mean_reversion  RSI in recovery zone (= 55) + anchored near POC or value area
     """
     above_vwap = bool(sig.get("above_vwap"))
     ema9  = float(sig.get("ema9",  0))
@@ -286,7 +286,7 @@ def _setup_quality_gate(sig: dict, setup: str, score: float) -> tuple[bool, str]
                 missing.append("EMA9>EMA21")
             if not above_vwap:
                 missing.append("above VWAP")
-            return True, f"Momentum requires {' + '.join(missing)} — not confirmed"
+            return True, f"Momentum requires {' + '.join(missing)}  not confirmed"
 
     elif setup == "gap_and_go":
         gap_pct   = float(sig.get("gap_pct", 0))
@@ -294,36 +294,36 @@ def _setup_quality_gate(sig: dict, setup: str, score: float) -> tuple[bool, str]
         above_orb = bool(sig.get("above_orb_30"))
         if gap_pct < config.GAP_AND_GO_MIN_PCT:
             return True, (
-                f"Gap-and-go requires ≥{config.GAP_AND_GO_MIN_PCT}% gap — "
+                f"Gap-and-go requires ={config.GAP_AND_GO_MIN_PCT}% gap  "
                 f"only {gap_pct:.1f}% today"
             )
         if not above_fbh and not above_orb:
             return True, (
-                "Gap-and-go: price has not cleared first-bar high or ORB-30 — "
+                "Gap-and-go: price has not cleared first-bar high or ORB-30  "
                 "no breakout confirmation, fakeout risk"
             )
 
     elif setup == "vwap_reclaim":
         if not above_vwap:
-            return True, "VWAP reclaim: price still below VWAP — reclaim not confirmed"
+            return True, "VWAP reclaim: price still below VWAP  reclaim not confirmed"
         vwap_cross = bool(sig.get("vwap_cross_up"))
         # At lower scores require a fresh cross; strong scores can enter on continuation
         if not vwap_cross and score < 8.0:
             return True, (
-                "VWAP reclaim: no fresh cross-up on this bar — "
+                "VWAP reclaim: no fresh cross-up on this bar  "
                 "chasing risk at this score level"
             )
 
     elif setup == "mean_reversion":
         if rsi > 55:
             return True, (
-                f"Mean reversion: RSI {rsi:.0f} too high — "
-                "not in reversal zone (need RSI ≤ 55 for credible reversion)"
+                f"Mean reversion: RSI {rsi:.0f} too high  "
+                "not in reversal zone (need RSI = 55 for credible reversion)"
             )
         # Must have a structural anchor to revert to
         if not sig.get("in_value_area") and not sig.get("near_poc"):
             return True, (
-                "Mean reversion: not near POC or inside value area — "
+                "Mean reversion: not near POC or inside value area  "
                 "no volume-based level to anchor the reversal"
             )
 
@@ -331,13 +331,13 @@ def _setup_quality_gate(sig: dict, setup: str, score: float) -> tuple[bool, str]
 
 
 def _enrichment_gate(item: dict, score: float) -> tuple[bool, str]:
-    """Use enrichment data as a final quality filter — only vetoes, never promotes.
+    """Use enrichment data as a final quality filter  only vetoes, never promotes.
 
-    Dark pool distribution signal → institutions are selling into retail buys → SKIP
-    Strongly bearish options flow without a news catalyst → smart money short → SKIP
+    Dark pool distribution signal ? institutions are selling into retail buys ? SKIP
+    Strongly bearish options flow without a news catalyst ? smart money short ? SKIP
 
     These gates only trigger when the signal is unambiguous AND score is not
-    extremely high (≥ 8.5), since a very strong price setup can override flow.
+    extremely high (= 8.5), since a very strong price setup can override flow.
     """
     # Dark pool: distribution signal with low dark-pool participation pct
     dp = item.get("dark_pool", {})
@@ -346,7 +346,7 @@ def _enrichment_gate(item: dict, score: float) -> tuple[bool, str]:
         dp_pct    = float(dp.get("dark_pool_pct", 50))
         if dp_signal == "distribution" and dp_pct < 30 and score < 8.5:
             return True, (
-                f"Dark pool distribution ({dp_pct:.0f}% dark) — "
+                f"Dark pool distribution ({dp_pct:.0f}% dark)  "
                 "institutional selling pressure contradicts long entry"
             )
 
@@ -358,7 +358,7 @@ def _enrichment_gate(item: dict, score: float) -> tuple[bool, str]:
         catalyst_score = int(item.get("catalyst_score", 1 if item.get("has_catalyst") else 0))
         if put_call > 2.0 and unusual_puts and catalyst_score < 2 and score < 8.0:
             return True, (
-                f"Options flow bearish (P/C {put_call:.1f}x, unusual puts, no catalyst) — "
+                f"Options flow bearish (P/C {put_call:.1f}x, unusual puts, no catalyst)  "
                 "smart money positioned short"
             )
 

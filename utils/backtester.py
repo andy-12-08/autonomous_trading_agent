@@ -11,11 +11,13 @@ from core.database import log
 
 
 class Backtester:
+    """Run historical signal-scoring simulations and summarize expectancy by band."""
+
     SCORE_BANDS = [
-        (5.0,  6.5,  "5.0–6.5  (below gate)"),
-        (6.5,  7.5,  "6.5–7.5  (marginal)"),
-        (7.5,  8.5,  "7.5–8.5  (strong)"),
-        (8.5, 10.1,  "8.5–10.0 (high-conviction)"),
+        (5.0,  6.5,  "5.06.5  (below gate)"),
+        (6.5,  7.5,  "6.57.5  (marginal)"),
+        (7.5,  8.5,  "7.58.5  (strong)"),
+        (8.5, 10.1,  "8.510.0 (high-conviction)"),
     ]
 
     MAX_HOLD_BARS  = 78   # max look-forward per trade (~6.5 hours / rest of day)
@@ -23,10 +25,15 @@ class Backtester:
     MIN_BARS_REQD  = 100  # skip symbols with fewer historical bars
 
     def __init__(self, broker, indicators, signal_scorer):
-        """Args:
+        """Initialize the backtester with market-data and analysis dependencies.
+
+        Args:
             broker: Alpaca client with get_bars_multi.
             indicators: IndicatorEngine instance.
             signal_scorer: SignalScorer instance.
+
+        Returns:
+            None.
         """
         self.broker        = broker
         self.indicators    = indicators
@@ -52,7 +59,7 @@ class Backtester:
     def _bias_at(self, df_htf: pd.DataFrame, ts: object) -> dict:
         """Return higher-TF trend bias for the bar immediately before timestamp ts.
 
-        Uses pre-computed indicators — no recomputation per call.
+        Uses pre-computed indicators  no recomputation per call.
 
         Args:
             df_htf: Higher-timeframe DataFrame with pre-computed indicators.
@@ -101,7 +108,7 @@ class Backtester:
             bar = df5.iloc[j]
             if float(bar["low"])  <= stop: return "loss",    j - start + 1, stop
             if float(bar["high"]) >= tp:   return "win",     j - start + 1, tp
-        # Neither hit — exit at last bar's close (could be win or loss)
+        # Neither hit  exit at last bar's close (could be win or loss)
         last_close = float(df5.iloc[end - 1]["close"])
         return "timeout", end - start, last_close
 
@@ -121,7 +128,7 @@ class Backtester:
         if df5.empty or len(df5) < Backtester.MIN_BARS_REQD:
             return []
 
-        # Compute indicators once — reused for every bar via .iloc[-1] access
+        # Compute indicators once  reused for every bar via .iloc[-1] access
         df5    = self.indicators.compute_indicators(df5.copy())
         df15   = self.indicators.compute_indicators(Backtester._resample(df5, "15min"))
         df_day = self.indicators.compute_indicators(Backtester._resample(df5, "1D"))
@@ -224,16 +231,16 @@ class Backtester:
         """
         positive = [v for v in analysis.values() if v["is_positive"] and v["count"] >= 10]
         if not positive:
-            return 10.0, "No band showed positive expectancy — review strategy entirely"
+            return 10.0, "No band showed positive expectancy  review strategy entirely"
 
         best_lo  = min(v["lo"] for v in positive)
         current  = config.MIN_SIGNAL_SCORE_TO_AI
 
         if abs(best_lo - current) < 0.3:
-            return current, f"Current threshold {current} is already well-calibrated — no change needed"
+            return current, f"Current threshold {current} is already well-calibrated  no change needed"
 
         direction = "Raise" if best_lo > current else "Lower"
-        return best_lo, f"{direction} from {current} → {best_lo} to cut losing setups"
+        return best_lo, f"{direction} from {current} ? {best_lo} to cut losing setups"
 
     def _build_report(self, analysis: dict, days: int,
                       total_trades: int, symbols: list[str]) -> str:
@@ -250,14 +257,14 @@ class Backtester:
         """
         today = datetime.now().strftime("%Y-%m-%d")
         rec_threshold, rec_reason = self._recommend_threshold(analysis)
-        sep = "─" * 62
+        sep = "-" * 62
 
         lines = [
-            "╔══════════════════════════════════════════════════════════════╗",
-            f"  WEEKLY BACKTEST REPORT — {today}",
-            f"  Symbols : {', '.join(symbols[:8])}{'…' if len(symbols) > 8 else ''}",
+            "+--------------------------------------------------------------+",
+            f"  WEEKLY BACKTEST REPORT  {today}",
+            f"  Symbols : {', '.join(symbols[:8])}{'' if len(symbols) > 8 else ''}",
             f"  Window  : last {days} calendar days  |  Total setups: {total_trades}",
-            "╚══════════════════════════════════════════════════════════════╝",
+            "+--------------------------------------------------------------+",
             "",
             sep,
             "  SCORE BAND BREAKDOWN",
@@ -267,7 +274,7 @@ class Backtester:
         ]
 
         for label, r in sorted(analysis.items(), key=lambda x: x[1]["lo"]):
-            flag = "✓" if r["is_positive"] else "✗ LOSING"
+            flag = "?" if r["is_positive"] else "? LOSING"
             lines.append(
                 f"  {label:<24} {r['count']:>5}  "
                 f"{r['win_rate']:>5.0%}  "
@@ -284,18 +291,18 @@ class Backtester:
             sep,
             f"  {rec_reason}",
             f"",
-            f"  → Set MIN_SIGNAL_SCORE_TO_AI = {rec_threshold}",
-            f"  → File: config.py  (search: MIN_SIGNAL_SCORE_TO_AI)",
-            f"  → Current value: {config.MIN_SIGNAL_SCORE_TO_AI}",
+            f"  ? Set MIN_SIGNAL_SCORE_TO_AI = {rec_threshold}",
+            f"  ? File: config.py  (search: MIN_SIGNAL_SCORE_TO_AI)",
+            f"  ? Current value: {config.MIN_SIGNAL_SCORE_TO_AI}",
             "",
         ]
 
         if total_trades < 30:
             lines += [
                 sep,
-                "  ⚠  WARNING: LOW SAMPLE SIZE",
+                "  ?  WARNING: LOW SAMPLE SIZE",
                 sep,
-                f"  Only {total_trades} setups found — recommendations may be unreliable.",
+                f"  Only {total_trades} setups found  recommendations may be unreliable.",
                 "  Run again after more trading days have accumulated (aim for 100+).",
                 "",
             ]
@@ -324,7 +331,7 @@ class Backtester:
             days: Lookback window in calendar days (used in the subject line).
         """
         today   = datetime.now().strftime("%Y-%m-%d")
-        subject = f"📊 Backtest Report {today} | {days}-day window"
+        subject = f"?? Backtest Report {today} | {days}-day window"
         msg            = MIMEText(body, "plain", "utf-8")
         msg["Subject"] = subject
         msg["From"]    = config.SMTP_USER
@@ -335,7 +342,7 @@ class Backtester:
                 s.starttls()
                 s.login(config.SMTP_USER, config.SMTP_PASS)
                 s.send_message(msg)
-            log.info("Backtest report emailed → %s", config.RECIPIENT_EMAIL)
+            log.info("Backtest report emailed ? %s", config.RECIPIENT_EMAIL)
         except Exception as e:
             log.error("Failed to email backtest report: %s", e)
 
@@ -351,11 +358,11 @@ class Backtester:
         if symbols is None:
             symbols = config.WATCHLIST
 
-        log.info("Backtest starting — %d symbols, %d-day window", len(symbols), days)
+        log.info("Backtest starting  %d symbols, %d-day window", len(symbols), days)
 
         bars_map = self.broker.get_bars_multi(symbols, "5Min", days)
         if not bars_map:
-            log.error("Backtest aborted — no historical bars returned")
+            log.error("Backtest aborted  no historical bars returned")
             return
 
         all_trades:      list[dict] = []
@@ -364,17 +371,17 @@ class Backtester:
         for sym in symbols:
             df = bars_map.get(sym)
             if df is None or df.empty or len(df) < Backtester.MIN_BARS_REQD:
-                log.warning("Backtest: skipping %s — only %d bars",
+                log.warning("Backtest: skipping %s  only %d bars",
                             sym, len(df) if df is not None else 0)
                 continue
             active_symbols.append(sym)
             all_trades.extend(self.simulate_symbol(sym, df))
 
-        log.info("Backtest complete — %d setups across %d symbols",
+        log.info("Backtest complete  %d setups across %d symbols",
                  len(all_trades), len(active_symbols))
 
         if not all_trades:
-            log.warning("Backtest: zero setups found — nothing to report")
+            log.warning("Backtest: zero setups found  nothing to report")
             return
 
         analysis = self.analyze_results(all_trades)
@@ -385,7 +392,7 @@ class Backtester:
         if config.SMTP_USER and config.SMTP_PASS:
             self._send_report_email(report, days)
         else:
-            log.warning("Backtest report not emailed — SMTP_USER/SMTP_PASS not set in .env")
+            log.warning("Backtest report not emailed  SMTP_USER/SMTP_PASS not set in .env")
 
 
 if __name__ == "__main__":

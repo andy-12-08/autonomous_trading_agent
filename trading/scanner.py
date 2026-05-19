@@ -33,11 +33,11 @@ class ScannerMixin:
             c["symbol"] for c in (daily_plan or {}).get("top_candidates", [])
         }
 
-        log.info("Fetching bars for %d symbols across 3 timeframes…", len(scan_list))
+        log.info("Fetching bars for %d symbols across 3 timeframes", len(scan_list))
         bars_5m  = self.broker.get_bars_multi(scan_list, "5Min",  days=10)
         bars_15m = self.broker.get_bars_multi(scan_list, "15Min", days=5)
         bars_day = self.broker.get_bars_multi(scan_list, "1Day",  days=30)
-        log.info("Bars received — 5m:%d  15m:%d  daily:%d symbols",
+        log.info("Bars received  5m:%d  15m:%d  daily:%d symbols",
                  len(bars_5m), len(bars_15m), len(bars_day))
 
         spy_5m = bars_5m.get("SPY")
@@ -56,7 +56,7 @@ class ScannerMixin:
             log.info("SPY trend: %s (close %.2f vs %.2f, 3 bars ago, chg=%.3f%%)",
                      "UP" if self._spy_trend_ok else "DOWN", _spy_c[-1], _spy_c[-4], _spy_chg_pct)
         else:
-            self._spy_trend_ok = True  # can't determine — don't block
+            self._spy_trend_ok = True  # can't determine  don't block
 
         raw = []
         _t_loop_start = _time.monotonic()
@@ -74,13 +74,13 @@ class ScannerMixin:
                 return None
 
             if self.risk_manager.is_too_volatile(sig.get("atr", 0), sig.get("price", 1)):
-                log.info("Skip %s — ATR too high (%.1f%%)",
+                log.info("Skip %s  ATR too high (%.1f%%)",
                          symbol, sig.get("atr", 0) / sig.get("price", 1) * 100)
                 return None
 
             sym_price = sig.get("price", 0)
             if sym_price < config.SCREENER_MIN_PRICE:
-                log.info("Skip %s — price too low ($%.2f)", symbol, sym_price)
+                log.info("Skip %s  price too low ($%.2f)", symbol, sym_price)
                 return None
 
             atr_pct    = sig.get("atr", 0) / max(sym_price, 0.01)
@@ -136,7 +136,7 @@ class ScannerMixin:
             except Exception:
                 pass  # fall back to vol_ratio computed by compute_indicators
 
-            # Float lookup — fast SQLite read (7-day cache); None when symbol not yet cached
+            # Float lookup  fast SQLite read (7-day cache); None when symbol not yet cached
             if hasattr(self, "float_cache") and self.float_cache is not None:
                 float_shares = self.float_cache.get_float_cached(symbol)
                 if float_shares is not None:
@@ -181,7 +181,7 @@ class ScannerMixin:
                     log.warning("Watchlist error %s: %s", sym, exc)
         except _cf.TimeoutError:
             pending = sum(1 for f in futures if not f.done())
-            log.warning("Symbol loop budget exhausted (>%ds) — %d results, %d abandoned",
+            log.warning("Symbol loop budget exhausted (>%ds)  %d results, %d abandoned",
                         _LOOP_BUDGET, len(raw), pending)
         pool.shutdown(wait=False, cancel_futures=True)
 

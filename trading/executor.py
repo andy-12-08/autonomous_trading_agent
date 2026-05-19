@@ -68,20 +68,20 @@ class ExecutorMixin:
             Fill cost in dollars for the caller to subtract from settled_cash, or None.
         """
         if symbol in open_symbols:
-            log.info("Skip BUY %s — already holding", symbol)
+            log.info("Skip BUY %s  already holding", symbol)
             return None
 
         if effective_daily_pnl <= -config.DAILY_DRAWDOWN_LIMIT:
             self.database.record_decision(symbol, "SKIP", d.get("entry_price"),
                             reasoning=f"Daily drawdown limit (${effective_daily_pnl:.0f} realized+unrealized). Rule 6.",
                             signal_score=_ss, veto_rule="DRAWDOWN_LIMIT")
-            log.warning("Daily drawdown guard — no new buys. effective_pnl=%.0f", effective_daily_pnl)
+            log.warning("Daily drawdown guard  no new buys. effective_pnl=%.0f", effective_daily_pnl)
             return None
 
         posture = (self._daily_plan or {}).get("risk_posture", "normal")
         if posture == "stand_aside":
             self.database.record_decision(symbol, "SKIP", d.get("entry_price"),
-                            reasoning="Morning study: stand_aside — no new entries today",
+                            reasoning="Morning study: stand_aside  no new entries today",
                             signal_score=_ss, veto_rule="STAND_ASIDE")
             return None
 
@@ -140,15 +140,15 @@ class ExecutorMixin:
             atr = float(df["atr"].iloc[-1]) if not df.empty else price * 0.01
             sig = self.indicators.get_signal_summary(df) if not df.empty else {}
         except Exception as e:
-            log.warning("Could not fetch bars/indicators for %s: %s — using ATR fallback", symbol, e)
+            log.warning("Could not fetch bars/indicators for %s: %s  using ATR fallback", symbol, e)
             atr = price * 0.01
             sig = {}
 
         if self.risk_manager.is_too_volatile(atr, price):
             self.database.record_decision(symbol, "SKIP", price,
-                            reasoning=f"ATR too high ({atr/price:.1%}) — skip (Rule 5)",
+                            reasoning=f"ATR too high ({atr/price:.1%})  skip (Rule 5)",
                             signal_score=_ss, veto_rule="ATR_TOO_HIGH")
-            log.info("ATR too high for %s — skipping", symbol)
+            log.info("ATR too high for %s  skipping", symbol)
             return None
 
         rm_sl, rm_tp = self.risk_manager.compute_stop_take_profit(
@@ -165,7 +165,7 @@ class ExecutorMixin:
         take_profit = round(price * config.BRACKET_TP_SAFETY, 2)
         if not stop_loss or not take_profit:
             self.database.record_decision(symbol, "SKIP", price,
-                            reasoning="Could not compute valid SL/TP — skipping",
+                            reasoning="Could not compute valid SL/TP  skipping",
                             signal_score=_ss, veto_rule="NO_LEVELS")
             return None
 
@@ -189,11 +189,11 @@ class ExecutorMixin:
         conviction_cap = _conviction_cap(_sym_score, self._deployed_today)
         if conviction_cap <= 0:
             self.database.record_decision(symbol, "SKIP", price,
-                            reasoning="Daily capital exhausted — conviction cap below minimum",
+                            reasoning="Daily capital exhausted  conviction cap below minimum",
                             signal_score=_ss, veto_rule="QTY_ZERO")
-            log.info("Daily capital exhausted for %s — skipping", symbol)
+            log.info("Daily capital exhausted for %s  skipping", symbol)
             return None
-        log.info("Conviction cap %s: score=%.1f → $%.0f (%.0f%% of $%.0f daily cap)",
+        log.info("Conviction cap %s: score=%.1f ? $%.0f (%.0f%% of $%.0f daily cap)",
                  symbol, _sym_score, conviction_cap,
                  conviction_cap / config.MAX_DAILY_CAPITAL * 100, config.MAX_DAILY_CAPITAL)
 
@@ -234,7 +234,7 @@ class ExecutorMixin:
 
         if _gap_go:
             _vol_floor = config.GAP_AND_GO_VOL_RATIO
-            log.info("Gap-and-go early entry %s: gap=%.1f%% above_vwap=True — vol floor relaxed to %.1f",
+            log.info("Gap-and-go early entry %s: gap=%.1f%% above_vwap=True  vol floor relaxed to %.1f",
                      symbol, _gap_pct, config.GAP_AND_GO_VOL_RATIO)
         elif _in_early:
             _vol_floor = config.EARLY_WINDOW_VOL_RATIO
@@ -243,7 +243,7 @@ class ExecutorMixin:
         else:
             _vol_floor = None
 
-        # ── Entry time gate ───────────────────────────────────────────────────────
+        # -- Entry time gate -------------------------------------------------------
         _prime_end = config.PRIME_ENTRY_END_HOUR * 60 + config.PRIME_ENTRY_END_MIN
         _close_min = config.MARKET_CLOSE_HOUR    * 60 + config.MARKET_CLOSE_MIN
 
@@ -251,7 +251,7 @@ class ExecutorMixin:
             self.database.record_decision(symbol, "SKIP", price,
                             reasoning="Late-day gate: no new entries after 3:45 PM ET",
                             signal_score=_ss, veto_rule="LATE_DAY_GATE")
-            log.info("Late-day gate: no new entries after 3:45 ET — skip %s", symbol)
+            log.info("Late-day gate: no new entries after 3:45 ET  skip %s", symbol)
             return None
 
         if _cur_min > _prime_end:
@@ -261,18 +261,18 @@ class ExecutorMixin:
                                 reasoning=(f"Midday gate: score {_ss:.1f}<{config.MIDDAY_ENTRY_MIN_SCORE} "
                                            f"or conf {_conf}<{config.MIDDAY_ENTRY_MIN_CONF} outside prime window"),
                                 signal_score=_ss, veto_rule="MIDDAY_GATE")
-                log.info("Midday gate %s: score=%.1f conf=%d — need ≥%.1f/≥%d outside 9:30–10:15 prime window",
+                log.info("Midday gate %s: score=%.1f conf=%d  need =%.1f/=%d outside 9:3010:15 prime window",
                          symbol, _ss, _conf, config.MIDDAY_ENTRY_MIN_SCORE, config.MIDDAY_ENTRY_MIN_CONF)
                 return None
 
-        # ── SPY trend gate ────────────────────────────────────────────────────────
+        # -- SPY trend gate --------------------------------------------------------
         # Block long entries when the broad market is trending down over the last 15 min.
-        # Gap-and-go and VWAP reclaim are exempt — both show stock-level RS independent of SPY.
+        # Gap-and-go and VWAP reclaim are exempt  both show stock-level RS independent of SPY.
         if not getattr(self, "_spy_trend_ok", True) and not _gap_go and not _vwap_reclaim:
             self.database.record_decision(symbol, "SKIP", price,
-                            reasoning="SPY trend gate: market trending down — no long entries",
+                            reasoning="SPY trend gate: market trending down  no long entries",
                             signal_score=_ss, veto_rule="SPY_TREND_GATE")
-            log.info("SPY trend gate %s: SPY bearish last 3 bars — skipping long entry", symbol)
+            log.info("SPY trend gate %s: SPY bearish last 3 bars  skipping long entry", symbol)
             return None
 
         quote       = self.broker.get_latest_quote(symbol)
@@ -281,9 +281,9 @@ class ExecutorMixin:
 
         if limit_price is None:
             self.database.record_decision(symbol, "SKIP", price,
-                            reasoning="No valid quote — skipping to avoid unprotected market entry (IEX data gap or spread >5%)",
+                            reasoning="No valid quote  skipping to avoid unprotected market entry (IEX data gap or spread >5%)",
                             signal_score=_ss, veto_rule="NO_QUOTE")
-            log.warning("Skip %s — no valid quote from IEX; refusing market-order fallback to avoid slippage", symbol)
+            log.warning("Skip %s  no valid quote from IEX; refusing market-order fallback to avoid slippage", symbol)
             return None
 
         edgar_veto, edgar_reason = self.edgar.check_fresh_8k(symbol)
@@ -323,22 +323,22 @@ class ExecutorMixin:
                 cancel_failed = False
                 try:
                     self.broker._trade_client.cancel_order_by_id(str(order_id))
-                    log.warning("BUY %s: order %s not filled after 3s — cancelled", symbol, order_id)
+                    log.warning("BUY %s: order %s not filled after 3s  cancelled", symbol, order_id)
                 except Exception as _ce:
                     cancel_failed = True
-                    log.warning("Could not cancel order %s for %s: %s — checking broker position", order_id, symbol, _ce)
+                    log.warning("Could not cancel order %s for %s: %s  checking broker position", order_id, symbol, _ce)
                 if cancel_failed:
-                    # Cancel failed — likely filled during the race.  Re-check position.
+                    # Cancel failed  likely filled during the race.  Re-check position.
                     try:
                         _broker_pos = self.broker.get_positions().get(symbol)
                         if _broker_pos is not None:
                             fill_price = float(getattr(_broker_pos, "avg_entry_price", None) or price)
-                            log.info("BUY %s: cancel failed, broker position confirmed — fill=%.4f", symbol, fill_price)
+                            log.info("BUY %s: cancel failed, broker position confirmed  fill=%.4f", symbol, fill_price)
                     except Exception as _pe:
                         log.warning("Broker position re-check failed for %s: %s", symbol, _pe)
             if fill_price is None:
                 self.database.record_decision(symbol, "SKIP", price,
-                                reasoning="Order submitted but fill not confirmed within 3s — cancelled",
+                                reasoning="Order submitted but fill not confirmed within 3s  cancelled",
                                 signal_score=_ss, veto_rule="NO_FILL")
                 return None
 
@@ -391,7 +391,7 @@ class ExecutorMixin:
         if not gfv_safe:
             self.database.record_decision(symbol, "SKIP", None,
                             reasoning=f"GFV block: {gfv_reason}", veto_rule="GFV_LOCK")
-            log.warning("GFV block — cannot sell %s: %s", symbol, gfv_reason)
+            log.warning("GFV block  cannot sell %s: %s", symbol, gfv_reason)
             return None
 
         pos_data      = next((p for p in positions_snapshot if p["symbol"] == symbol), {})
@@ -401,7 +401,7 @@ class ExecutorMixin:
 
         if action == "PARTIAL_SELL":
             if total_qty < 2:
-                log.info("Partial sell skipped for %s — only %.0f share(s), cannot split", symbol, total_qty)
+                log.info("Partial sell skipped for %s  only %.0f share(s), cannot split", symbol, total_qty)
                 return None
             qty = int(total_qty // 2)
             pnl = (current_price - entry_price) * qty if entry_price else 0
@@ -431,7 +431,7 @@ class ExecutorMixin:
                 trailing=pos_data.get("trailing", False),
                 highest_price=pos_data.get("current_price"),
                 partial_taken=True, entry_ts=pos_data.get("entry_ts", ""))
-            # Resubmit broker protection for the runner — cancel stale bracket legs
+            # Resubmit broker protection for the runner  cancel stale bracket legs
             # (sized for old qty) then place a fresh bracket for the remaining shares.
             if runner_qty >= 1 and runner_stop and runner_tp:
                 try:
@@ -441,7 +441,7 @@ class ExecutorMixin:
                     log.info("Runner bracket resubmitted %s: qty=%.0f SL=%.2f TP=%.2f",
                              symbol, runner_qty, runner_stop, runner_tp)
                 except Exception as _re:
-                    log.warning("Could not resubmit runner bracket for %s: %s — submitting stop only", symbol, _re)
+                    log.warning("Could not resubmit runner bracket for %s: %s  submitting stop only", symbol, _re)
                     try:
                         self.broker.update_stop_loss(symbol, runner_stop)
                     except Exception:
@@ -511,7 +511,7 @@ class ExecutorMixin:
         Returns:
             None.
         """
-        log.info("[DRY-RUN] Algo returned %d decisions — no orders will be placed:", len(decisions))
+        log.info("[DRY-RUN] Algo returned %d decisions  no orders will be placed:", len(decisions))
         for d in decisions:
             sym    = (d.get("symbol") or "?").upper()
             action = (d.get("action") or "SKIP").upper()
@@ -556,12 +556,12 @@ class ExecutorMixin:
             log.info("  [%s] %-6s  action=%-12s  entry=%-8s  SL=%-8s  TP=%-8s  "
                      "qty=%-5s  conf=%s  R:R=%s  risk=$%s",
                      final, sym, action,
-                     f"{ep:.2f}" if ep else "—",
-                     f"{sl:.2f}" if sl else "—",
-                     f"{tp:.2f}" if tp else "—",
-                     qty or "—", conf or "—", rr or "—", risk or "—")
+                     f"{ep:.2f}" if ep else "",
+                     f"{sl:.2f}" if sl else "",
+                     f"{tp:.2f}" if tp else "",
+                     qty or "", conf or "", rr or "", risk or "")
             if reason:
-                log.info("         → %s", reason)
+                log.info("         ? %s", reason)
 
     def execute_decisions(
         self,

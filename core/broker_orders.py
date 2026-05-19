@@ -141,7 +141,7 @@ class OrdersMixin:
         sym_up = symbol.upper()
 
         def _cancel_if_stop(o, inherited_sym: str = "") -> bool:
-            # Bracket child legs may lack their own symbol — inherit from the parent.
+            # Bracket child legs may lack their own symbol  inherit from the parent.
             o_sym  = str(getattr(o, "symbol", "") or inherited_sym).upper()
             o_type = str(getattr(o, "order_type", "") or getattr(o, "type", "") or "").lower()
             o_side = str(getattr(o, "side", "")).lower()
@@ -164,7 +164,7 @@ class OrdersMixin:
             # Refuse to cancel existing stops and replace with an impossible one.
             # The caller should have caught this; log and bail to keep protection intact.
             log.warning(
-                "update_stop_loss %s: new stop %.2f >= market price %.2f — aborting "
+                "update_stop_loss %s: new stop %.2f >= market price %.2f  aborting "
                 "(existing bracket/stop left in place)",
                 symbol, new_stop, mkt_price)
             return None
@@ -188,7 +188,7 @@ class OrdersMixin:
         except Exception as e:
             err = str(e)
             if "insufficient qty" in err or "40310000" in err:
-                log.info("Stop resubmit skipped for %s — bracket order already protecting position", symbol)
+                log.info("Stop resubmit skipped for %s  bracket order already protecting position", symbol)
             else:
                 log.error("Stop update failed %s: %s", symbol, e)
             return None

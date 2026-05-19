@@ -1,4 +1,4 @@
-"""Quick connectivity test — does not place any orders."""
+"""Quick connectivity test  does not place any orders."""
 from core.broker import AlpacaBroker
 
 broker = AlpacaBroker()

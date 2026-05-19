@@ -67,7 +67,7 @@ class AlpacaBroker(OrdersMixin, MarketDataMixin):
     def has_active_stop_order(self, symbol: str, open_orders: list) -> bool:
         """Return True if a stop-type sell order (not a take-profit limit) exists for symbol.
 
-        Bracket child legs often have no symbol attribute of their own — the symbol
+        Bracket child legs often have no symbol attribute of their own  the symbol
         lives only on the parent order.  We therefore accept a leg as matching when
         the parent's symbol matches, even if the leg's own symbol field is empty.
 

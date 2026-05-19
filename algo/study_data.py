@@ -9,6 +9,8 @@ from core.database import log
 
 
 class StudyDataMixin:
+    """Market-study data helpers used by the algorithmic morning analyst."""
+
     def _get_market_context(self) -> dict:
         """Pull indicators for SPY, QQQ, and sector proxies.
 
@@ -89,8 +91,8 @@ class StudyDataMixin:
                 kw in e["title"].lower() for e in high_impact for kw in CRITICAL_KEYWORDS
             )
 
-            # FOMC only → stand_aside.  CPI/NFP/GDP print at 8:30 AM and are
-            # already priced in by the open — trade the post-data trend instead.
+            # FOMC only ? stand_aside.  CPI/NFP/GDP print at 8:30 AM and are
+            # already priced in by the open  trade the post-data trend instead.
             # Multiple high-impact events on the same day (e.g. CPI m/m + Core CPI)
             # do NOT escalate beyond caution; only FOMC warrants a full block.
             macro_flag = "stand_aside" if is_fomc else ("caution" if has_critical else "none")
@@ -109,7 +111,7 @@ class StudyDataMixin:
             }
 
         except Exception as e:
-            log.warning("Economic calendar fetch failed: %s — assuming normal macro environment", e)
+            log.warning("Economic calendar fetch failed: %s  assuming normal macro environment", e)
             return {
                 "high_impact":        [],
                 "medium_impact":      [],
@@ -132,10 +134,10 @@ class StudyDataMixin:
         """
         snapshots = self.broker.get_snapshots_bulk(watchlist)
         if not snapshots:
-            log.warning("Gap/breadth: no snapshot data — skipping")
+            log.warning("Gap/breadth: no snapshot data  skipping")
             return [], {"breadth_condition": "UNKNOWN", "total_symbols": 0}
 
-        # ── Gap scan ──────────────────────────────────────────────────────────────
+        # -- Gap scan --------------------------------------------------------------
         gappers: list[dict] = []
         for sym, snap in snapshots.items():
             chg = snap.get("change_pct", 0)
@@ -157,7 +159,7 @@ class StudyDataMixin:
         gappers.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
         log.info("Gap scan: %d symbols with >= 1%% pre-market gap", len(gappers))
 
-        # ── Market breadth ────────────────────────────────────────────────────────
+        # -- Market breadth --------------------------------------------------------
         changes = [(sym, snap.get("change_pct", 0)) for sym, snap in snapshots.items()]
         vals    = [c for _, c in changes]
 
@@ -336,8 +338,7 @@ class StudyDataMixin:
         missed  = [r for r in result if r["was_miss"]]
         correct = [r for r in result if not r["was_miss"]]
         log.info(
-            "Missed-opp: %d skips → %d misses, %d correctly avoided",
+            "Missed-opp: %d skips ? %d misses, %d correctly avoided",
             len(first_skip), len(missed), len(correct),
         )
         return result
-

@@ -1,11 +1,11 @@
 import concurrent.futures as _cf
-from datetime import date, datetime
+from datetime import datetime
 
 import config
 from core.database import log
 
 
-# ── Catalyst quality keywords ───────────────────────────────────────────────
+# -- Catalyst quality keywords -----------------------------------------------
 # Score: 3 = major binary event, 2 = significant, 1 = notable, -1 = negative
 _CAT_HIGH = [
     "fda approv", "fda clearance", "breakthrough therapy", "acquisition", "merger",
@@ -75,8 +75,8 @@ class TradeCycleMixin:
             Tuple of (vix_size_factor, regime_string) after compounding VIX with yield curve.
         """
         vix_label, vix_vol, vix_factor = self.market_guard.get_vix_regime()
-        account_ctx["vix_regime"] = f"{vix_label} ({vix_vol:.1f}% realized vol, ×{vix_factor:.2f})"
-        log.info("VIX regime: %s (realized vol %.1f%%, size ×%.2f)", vix_label, vix_vol, vix_factor)
+        account_ctx["vix_regime"] = f"{vix_label} ({vix_vol:.1f}% realized vol, {vix_factor:.2f})"
+        log.info("VIX regime: %s (realized vol %.1f%%, size %.2f)", vix_label, vix_vol, vix_factor)
 
         yc_signal  = self.yield_curve.get_yield_curve()
         yc_mult    = yc_signal.get("size_multiplier", 1.0)
@@ -88,7 +88,7 @@ class TradeCycleMixin:
             "note":            yc_signal.get("note", ""),
         }
         if yc_mult < 1.0:
-            log.warning("Yield curve %s — size ×%.2f (effective VIX+YC ×%.2f)",
+            log.warning("Yield curve %s  size %.2f (effective VIX+YC %.2f)",
                         yc_signal.get("signal", "").upper(), yc_mult, vix_factor)
 
         mkt_structure = self.market_guard.get_market_structure()
@@ -131,13 +131,13 @@ class TradeCycleMixin:
                     }
         if not etf_snaps:
             log.warning(
-                "Sector rotation: no ETF bar data returned — all sectors defaulting to 0.0%% "
+                "Sector rotation: no ETF bar data returned  all sectors defaulting to 0.0%% "
                 "(market may be closed or IEX has no data for %s)", sector_etfs)
 
         sector_str = self.bucket_manager.get_sector_strength(etf_snaps)
         leading    = sorted(sector_str.items(), key=lambda x: x[1], reverse=True)[:3]
         lagging    = sorted(sector_str.items(), key=lambda x: x[1])[:3]
-        log.info("Sector rotation — leading: %s | lagging: %s",
+        log.info("Sector rotation  leading: %s | lagging: %s",
                  [(k, f"{v:+.1f}%") for k, v in leading],
                  [(k, f"{v:+.1f}%") for k, v in lagging])
         account_ctx["sector_strength"] = {k: f"{v:+.1f}%" for k, v in sector_str.items()}
@@ -184,7 +184,7 @@ class TradeCycleMixin:
 
         done = sum(1 for f in [f_news, f_opt, f_ins, f_dp, f_si, f_pm] if f.done())
         if done < 6:
-            log.warning("Enrichment: only %d/6 calls finished in %ds — slow APIs skipped",
+            log.warning("Enrichment: only %d/6 calls finished in %ds  slow APIs skipped",
                         done, _TIMEOUT)
 
         if news_data:
@@ -273,7 +273,7 @@ class TradeCycleMixin:
                 pre_vetoed.append((sym, f"cooling: {cooling_symbols[sym]}"))
                 continue
 
-            # 15-min alignment gate — momentum and gap_and_go setups require the
+            # 15-min alignment gate  momentum and gap_and_go setups require the
             # 15-min timeframe to be fully bullish (EMA + VWAP + MACD all positive).
             # Mean-reversion and vwap_reclaim setups are exempt: they work precisely
             # because price is NOT yet aligned on the higher timeframe.
@@ -285,10 +285,10 @@ class TradeCycleMixin:
                               bool(b15.get("macd_bull"))])
                 if bull15 < 3:
                     pre_vetoed.append((sym,
-                        f"15min gate: {bull15}/3 bullish — momentum entries require full 15-min alignment"))
+                        f"15min gate: {bull15}/3 bullish  momentum entries require full 15-min alignment"))
                     continue
 
-            # Sector alignment gate — if the symbol's sector is underperforming
+            # Sector alignment gate  if the symbol's sector is underperforming
             # (negative on the day), require a higher-conviction signal to enter.
             # A lagging sector trades against the macro tailwind; only the strongest
             # setups are worth fighting that headwind.
@@ -298,7 +298,7 @@ class TradeCycleMixin:
             if sec_perf < 0 and score < 8.5:
                 pre_vetoed.append((sym,
                     f"sector gate: {bucket} underperforming ({sec_perf:+.1f}%) "
-                    f"— score {score:.1f} below 8.5 threshold for lagging sector"))
+                    f" score {score:.1f} below 8.5 threshold for lagging sector"))
                 continue
 
             pre_passed.append(item)
@@ -330,7 +330,7 @@ class TradeCycleMixin:
         hour, minute = now.hour, now.minute
 
         if self._force_run:
-            log.info("SCAN: force mode — bypassing market-hours and study gates")
+            log.info("SCAN: force mode  bypassing market-hours and study gates")
             self._study_complete = True
         else:
             in_premarket_study = self.is_in_study_window(hour, minute)
@@ -353,7 +353,7 @@ class TradeCycleMixin:
                     self._study_complete = True
                     log.info("SCAN: loaded cached daily plan")
                 else:
-                    log.info("SCAN: skipped — morning study not yet complete")
+                    log.info("SCAN: skipped  morning study not yet complete")
                     return
 
             if self.is_in_study_window(hour, minute):
@@ -387,13 +387,13 @@ class TradeCycleMixin:
         if account_ctx["available_today"] <= 0:
             if account_ctx["open_positions"] > 0:
                 log.info(
-                    "Daily capital exhausted ($%.0f deployed) — "
+                    "Daily capital exhausted ($%.0f deployed)  "
                     "%d open position(s) handled by position manager, skipping full scan",
                     self._deployed_today, account_ctx["open_positions"])
             else:
                 log.info(
                     "Daily capital exhausted ($%.0f deployed) and no open positions "
-                    "— skipping scan until tomorrow", self._deployed_today)
+                    " skipping scan until tomorrow", self._deployed_today)
             return
 
         in_high_vol_window = self.is_high_volume_window(hour, minute)
@@ -406,14 +406,14 @@ class TradeCycleMixin:
             )
             if is_fomc and (hour > 14 or (hour == 14 and minute >= 30)):
                 is_fomc = False
-                log.info("FOMC post-announcement window (>14:30 ET) — unlocking SPY override check")
+                log.info("FOMC post-announcement window (>14:30 ET)  unlocking SPY override check")
 
             # NFP/CPI/GDP print at 8:30 ET; market absorbs the data within ~2h.
             # After 10:30 ET, downgrade to conservative so the prime window isn't lost.
             # FOMC keeps its own stricter 14:30 ET lock.
             if not is_fomc and (hour > 10 or (hour == 10 and minute >= 30)):
                 self._daily_plan["risk_posture"] = "conservative"
-                log.warning("Macro unlock: past 10:30 ET — downgrading stand_aside → conservative "
+                log.warning("Macro unlock: past 10:30 ET  downgrading stand_aside ? conservative "
                             "(NFP/CPI dust settled; FOMC would stay locked)")
 
             if self._daily_plan.get("risk_posture") == "stand_aside":
@@ -424,22 +424,22 @@ class TradeCycleMixin:
                     spy_gain = (spy_now - spy_open) / spy_open * 100
                     if spy_gain >= 0.5:
                         self._daily_plan["risk_posture"] = "conservative"
-                        log.warning("Macro override: SPY +%.2f%% since open — downgrading "
-                                    "stand_aside → conservative.", spy_gain)
+                        log.warning("Macro override: SPY +%.2f%% since open  downgrading "
+                                    "stand_aside ? conservative.", spy_gain)
                     else:
                         reason = (self._daily_plan.get("special_warnings") or ["macro/market conditions"])[0]
-                        log.warning("SCAN POSTURE: STAND_ASIDE — %s", reason[:120])
+                        log.warning("SCAN POSTURE: STAND_ASIDE  %s", reason[:120])
                         return
                 elif is_fomc:
-                    reason = (self._daily_plan.get("special_warnings") or ["FOMC day — locked until 14:30 ET"])[0]
-                    log.warning("SCAN POSTURE: STAND_ASIDE (FOMC locked) — %s", reason[:120])
+                    reason = (self._daily_plan.get("special_warnings") or ["FOMC day  locked until 14:30 ET"])[0]
+                    log.warning("SCAN POSTURE: STAND_ASIDE (FOMC locked)  %s", reason[:120])
                     return
                 else:
-                    log.warning("SCAN POSTURE: STAND_ASIDE — SPY bars unavailable, staying out")
+                    log.warning("SCAN POSTURE: STAND_ASIDE  SPY bars unavailable, staying out")
                     return
         elif self._daily_plan and self._daily_plan.get("risk_posture") == "conservative":
             reason = (self._daily_plan.get("special_warnings") or ["macro/market conditions"])[0]
-            log.warning("SCAN POSTURE: CONSERVATIVE — %s", reason[:120])
+            log.warning("SCAN POSTURE: CONSERVATIVE  %s", reason[:120])
 
         log.info("--- SCAN %s | vol_window=%s pnl=%.0f deployed=%.0f (%.1f%%) trades=%d/%d ---",
                  now.strftime("%H:%M"), "YES" if in_high_vol_window else "MIDDAY",
@@ -455,21 +455,21 @@ class TradeCycleMixin:
         if self._last_full_scan_ts is not None:
             elapsed = (now - self._last_full_scan_ts).total_seconds()
             if open_min <= cur_min < open_end:
-                pass  # Opening 30 min: scan every 5-min tick — no throttle
+                pass  # Opening 30 min: scan every 5-min tick  no throttle
             elif open_end <= cur_min < 11 * 60 + 30:
                 if elapsed < 600:
-                    log.info("Mid-morning throttle: last scan %.0fs ago — skipping (10-min interval)", elapsed)
+                    log.info("Mid-morning throttle: last scan %.0fs ago  skipping (10-min interval)", elapsed)
                     return
             elif 11 * 60 + 30 <= cur_min < 14 * 60:
                 if elapsed < 720:
-                    log.info("Midday throttle: last scan %.0fs ago — skipping (12-min interval)", elapsed)
+                    log.info("Midday throttle: last scan %.0fs ago  skipping (12-min interval)", elapsed)
                     return
-            # Power hour 14:00–15:45: scan every 5-min tick — no throttle
+            # Power hour 14:0015:45: scan every 5-min tick  no throttle
 
         cb_ok, cb_reason = self.market_guard.check_circuit_breaker()
         account_ctx["circuit_breaker"] = cb_reason if not cb_ok else "OK"
         if not cb_ok:
-            log.warning("CIRCUIT BREAKER active — no new entries this scan")
+            log.warning("CIRCUIT BREAKER active  no new entries this scan")
 
         vix_factor, regime = self._gather_macro_factors(account_ctx)
 
@@ -486,7 +486,7 @@ class TradeCycleMixin:
         if (posture_now != "stand_aside" and cb_ok and
                 equity > 0 and self._deployed_today < config.MIN_TOTAL_EXPOSURE_PCT * equity):
             dyn_conf_bar = max(config.MIN_SIGNAL_CONFIDENCE, dyn_conf_bar - 1)
-            log.info("Exposure floor: deployed %.0f%% below %.0f%% minimum — lowering confidence bar to %d",
+            log.info("Exposure floor: deployed %.0f%% below %.0f%% minimum  lowering confidence bar to %d",
                      exposure_pct, config.MIN_TOTAL_EXPOSURE_PCT * 100, dyn_conf_bar)
         account_ctx["dynamic_confidence_bar"] = dyn_conf_bar
 
@@ -513,10 +513,10 @@ class TradeCycleMixin:
         account_ctx["vol_ratio_floor"]   = (
             config.GAP_AND_GO_VOL_RATIO if _in_early else config.MIN_VOL_RATIO_ENTRY)
         account_ctx["early_window_note"] = (
-            f"EARLY WINDOW ACTIVE (9:35–10:30 ET): vol_ratio floor relaxed to "
+            f"EARLY WINDOW ACTIVE (9:3510:30 ET): vol_ratio floor relaxed to "
             f"{config.EARLY_WINDOW_VOL_RATIO} (general) or {config.GAP_AND_GO_VOL_RATIO} "
             f"(gap >= {config.GAP_AND_GO_MIN_VOL_PCT}% + above VWAP). "
-            f"Do NOT auto-SKIP on vol_ratio < 1.0 this cycle — let the risk manager decide."
+            f"Do NOT auto-SKIP on vol_ratio < 1.0 this cycle  let the risk manager decide."
             if _in_early else
             "Normal session: standard vol_ratio floor applies (>= 0.7)."
         )
@@ -535,7 +535,7 @@ class TradeCycleMixin:
         }
 
         if not watchlist_data and not positions_snapshot:
-            log.info("No candidates and no open positions — skipping algo call this scan")
+            log.info("No candidates and no open positions  skipping algo call this scan")
             return
 
         pre_passed, _ = self._pre_filter_candidates(
@@ -558,14 +558,14 @@ class TradeCycleMixin:
                 if pnl_pct <= threshold:
                     pnl_factor = factor
                     log.warning(
-                        "Intraday PnL degradation: daily P&L %.1f%% ≤ %.1f%% — sizing ×%.2f",
+                        "Intraday PnL degradation: daily P&L %.1f%% = %.1f%%  sizing %.2f",
                         pnl_pct * 100, threshold * 100, factor)
                     break
         vix_factor = round(vix_factor * pnl_factor, 4)
 
         if self._scan_generation != scan_gen:
             log.warning(
-                "Scan gen %d abandoned — skipping execute_decisions to prevent stale orders",
+                "Scan gen %d abandoned  skipping execute_decisions to prevent stale orders",
                 scan_gen,
             )
             return

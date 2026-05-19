@@ -14,10 +14,10 @@ class SignalRulesMixin:
 
         Institutional logic:
           - Stock gapped up > 1.5% from prior close
-          - Gap is holding (price ≥ today's open) — not filling back
+          - Gap is holding (price = today's open)  not filling back
           - Volume confirming the directional move
           - Stop placed just below today's open (gap fills = thesis dead, exit fast)
-          - Time-bounded: only valid in the first 90 min (9:30–11:00 AM ET)
+          - Time-bounded: only valid in the first 90 min (9:3011:00 AM ET)
 
         Args:
             sig: Flat indicator dict from indicators.get_signal_summary(), with
@@ -33,7 +33,7 @@ class SignalRulesMixin:
         cutoff   = now_et.hour > config.GAP_AND_GO_CUTOFF_HOUR or (
                    now_et.hour == config.GAP_AND_GO_CUTOFF_HOUR and
                    now_et.minute >= config.GAP_AND_GO_CUTOFF_MIN)
-        # Catalyst exception: news-driven volume spike (vol_ratio > 3×) bypasses time gate.
+        # Catalyst exception: news-driven volume spike (vol_ratio > 3) bypasses time gate.
         # FDA decisions, earnings revisions, and analyst upgrades can hit at any hour.
         news_catalyst = cutoff and vol_ratio >= 3.0
         if cutoff and not news_catalyst:
@@ -54,7 +54,7 @@ class SignalRulesMixin:
         if gap_pct < config.GAP_AND_GO_MIN_PCT or gap_pct > config.GAP_AND_GO_MAX_PCT:
             return 0.0, []
 
-        # Gap filling: price dropped back below today's open → setup dead
+        # Gap filling: price dropped back below today's open ? setup dead
         if today_open > 0 and price < today_open * 0.997:
             return 0.0, []
 
@@ -73,16 +73,16 @@ class SignalRulesMixin:
         elif gap_pct >= 1.5:
             score += 0.5; ev.append(f"+0.5 gap {gap_pct:.1f}%")
 
-        # Price structure — tiered ORB check
+        # Price structure  tiered ORB check
         # After 10:00 ET the 30-min range is complete; that breakout is the real signal.
         # Before 10:00 fall back to first-bar high as a weaker early-session proxy.
         if orb_30_valid and orb_30_high > 0 and price > orb_30_high:
             score += 1.5; ev.append(
-                f"+1.5 ORB-30 breakout — cleared 30-min institutional range ({orb_30_high:.2f})")
-            # Wide ORB means the stop (at orb_30_low) is far — R:R degrades
+                f"+1.5 ORB-30 breakout  cleared 30-min institutional range ({orb_30_high:.2f})")
+            # Wide ORB means the stop (at orb_30_low) is far  R:R degrades
             if orb_30_width > 3.0:
                 score -= 0.5; ev.append(
-                    f"-0.5 ORB-30 wide ({orb_30_width:.1f}%) — stop distance elevated")
+                    f"-0.5 ORB-30 wide ({orb_30_width:.1f}%)  stop distance elevated")
         elif today_open > 0 and price > first_bar_high:
             score += 0.8; ev.append("+0.8 above first-bar high (ORB-30 not yet complete)")
         elif today_open > 0 and price >= today_open:
@@ -100,18 +100,18 @@ class SignalRulesMixin:
         elif vol_ratio >= 1.5:
             score += 0.5; ev.append(f"+0.5 elevated volume {vol_ratio:.1f}x")
 
-        # Overbought penalty — gapping into already-extended RSI = chasing
+        # Overbought penalty  gapping into already-extended RSI = chasing
         if rsi > 78:
             score -= 1.5; ev.append(f"-1.5 RSI overbought {rsi:.0f} (gap extended)")
         elif rsi > 72:
             score -= 0.8; ev.append(f"-0.8 RSI hot {rsi:.0f}")
 
-        # Stop width check: if price is already far above open, stop is wide → poor R:R
+        # Stop width check: if price is already far above open, stop is wide ? poor R:R
         if today_open > 0 and price > 0:
             pct_above_open = (price - today_open) / today_open * 100
             if pct_above_open > gap_pct * 0.75:
                 score -= 1.0; ev.append(
-                    f"-1.0 price {pct_above_open:.1f}% above open — stop too wide, chasing")
+                    f"-1.0 price {pct_above_open:.1f}% above open  stop too wide, chasing")
 
         return round(max(0.0, min(10.0, score)), 1), ev
 
@@ -124,7 +124,7 @@ class SignalRulesMixin:
           - Sellers pushed price below VWAP; buyers reclaim it with volume.
           - Stop: just below VWAP (if it falls back, thesis is dead).
           - Target: prior high, next resistance, or ORB-30 high.
-          - Valid all day — not time-limited like gap-and-go.
+          - Valid all day  not time-limited like gap-and-go.
 
         Args:
             sig: Flat indicator dict from indicators.get_signal_summary(), with
@@ -132,7 +132,7 @@ class SignalRulesMixin:
 
         Returns:
             Tuple of (score, evidence_list). Returns (0.0, []) when vwap_cross_up
-            is False — scorer is effectively disabled until the cross actually
+            is False  scorer is effectively disabled until the cross actually
             occurs this bar.
         """
         if not bool(sig.get("vwap_cross_up", False)):
@@ -148,9 +148,9 @@ class SignalRulesMixin:
         ema50          = float(sig.get("ema50",          0))
 
         score = 5.0
-        ev    = ["+5.0 VWAP reclaim — price crossed back above VWAP from below"]
+        ev    = ["+5.0 VWAP reclaim  price crossed back above VWAP from below"]
 
-        # Volume — the most important confirmation (institutions drive the reclaim)
+        # Volume  the most important confirmation (institutions drive the reclaim)
         if vol_ratio >= 2.5:
             score += 1.5; ev.append(f"+1.5 strong volume on reclaim {vol_ratio:.1f}x")
         elif vol_ratio >= 1.8:
@@ -158,39 +158,39 @@ class SignalRulesMixin:
         elif vol_ratio >= 1.3:
             score += 0.5; ev.append(f"+0.5 above-avg volume {vol_ratio:.1f}x")
         else:
-            score -= 0.5; ev.append(f"-0.5 weak volume on reclaim {vol_ratio:.1f}x — low conviction")
+            score -= 0.5; ev.append(f"-0.5 weak volume on reclaim {vol_ratio:.1f}x  low conviction")
 
         # Volume follow-through: if only the cross bar had high volume but the prior
         # bar was below average, the spike is a single-candle flush rather than
-        # sustained institutional buying — reduce conviction.
+        # sustained institutional buying  reduce conviction.
         if vol_ratio >= 1.8 and prev_vol_ratio < 1.0:
             score -= 1.0; ev.append(
                 f"-1.0 volume spike on cross bar only (prior bar {prev_vol_ratio:.1f}x) "
-                "— single-candle move, no sustained buying")
+                " single-candle move, no sustained buying")
 
-        # RSI — want recovery, not already extended
+        # RSI  want recovery, not already extended
         if 42 <= rsi <= 60:
             score += 0.5; ev.append(f"+0.5 RSI recovery zone {rsi:.0f}")
         elif 35 <= rsi < 42:
             score += 0.3; ev.append(f"+0.3 RSI recovering {rsi:.0f}")
         elif rsi > 70:
-            score -= 1.5; ev.append(f"-1.5 RSI overbought at reclaim {rsi:.0f} — chasing")
+            score -= 1.5; ev.append(f"-1.5 RSI overbought at reclaim {rsi:.0f}  chasing")
         elif rsi > 65:
             score -= 0.8; ev.append(f"-0.8 RSI elevated {rsi:.0f}")
 
-        # EMA trend — with-trend reclaims succeed more than countertrend
+        # EMA trend  with-trend reclaims succeed more than countertrend
         if ema9 > ema21:
-            score += 1.0; ev.append("+1.0 EMA9>EMA21 — reclaiming VWAP inside uptrend")
+            score += 1.0; ev.append("+1.0 EMA9>EMA21  reclaiming VWAP inside uptrend")
         elif ema9 < ema21 and ema21 < ema50 and ema50 > 0:
-            score -= 1.0; ev.append("-1.0 full bearish EMA stack — countertrend reclaim")
+            score -= 1.0; ev.append("-1.0 full bearish EMA stack  countertrend reclaim")
 
-        # Entry proximity to VWAP — tighter = better R:R (stop just below VWAP)
+        # Entry proximity to VWAP  tighter = better R:R (stop just below VWAP)
         if vwap > 0 and price > 0:
             pct_above = (price - vwap) / vwap * 100
             if pct_above > 2.5:
-                score -= 1.0; ev.append(f"-1.0 price {pct_above:.1f}% above VWAP — stop too wide")
+                score -= 1.0; ev.append(f"-1.0 price {pct_above:.1f}% above VWAP  stop too wide")
             elif pct_above > 1.5:
-                score -= 0.5; ev.append(f"-0.5 price {pct_above:.1f}% above VWAP — entry extended")
+                score -= 0.5; ev.append(f"-0.5 price {pct_above:.1f}% above VWAP  entry extended")
 
         return round(max(0.0, min(10.0, score)), 1), ev
 
@@ -201,9 +201,9 @@ class SignalRulesMixin:
 
         Institutional logic:
           - Price is inside the value area but below the POC (volume cluster center).
-          - POC is a statistical magnet — price tends to revisit and fill it.
+          - POC is a statistical magnet  price tends to revisit and fill it.
           - Entry: price in the lower portion of the value area, momentum turning up.
-          - Stop: below VAL (value area low — structural support).
+          - Stop: below VAL (value area low  structural support).
           - Target: POC (the reversion target).
 
         Args:
@@ -230,54 +230,54 @@ class SignalRulesMixin:
         # Mandatory: need volume profile data, price below POC, price above VAL
         if poc == 0 or val == 0 or price <= 0:
             return 0.0, []
-        if price >= poc:                    # price already at/above POC — no reversion needed
+        if price >= poc:                    # price already at/above POC  no reversion needed
             return 0.0, []
-        if price < val:                     # broken below value area — falling knife, skip
+        if price < val:                     # broken below value area  falling knife, skip
             return 0.0, []
 
         score = 4.5
         pct_to_poc = (poc - price) / price * 100
         ev    = [f"+4.5 mean-reversion: below POC ({poc:.2f}), VAL support {val:.2f}"]
 
-        # Value area confirmation — inside the institutional auction zone
+        # Value area confirmation  inside the institutional auction zone
         if in_value_area:
-            score += 1.0; ev.append("+1.0 inside value area — institutional fair value zone")
+            score += 1.0; ev.append("+1.0 inside value area  institutional fair value zone")
 
-        # POC proximity — the closer the target, the better the R:R
+        # POC proximity  the closer the target, the better the R:R
         if near_poc:
-            score += 0.8; ev.append(f"+0.8 near POC — reversion target within 0.3%")
+            score += 0.8; ev.append(f"+0.8 near POC  reversion target within 0.3%")
         elif pct_to_poc <= 1.5:
-            score += 0.5; ev.append(f"+0.5 POC {pct_to_poc:.1f}% away — achievable target")
+            score += 0.5; ev.append(f"+0.5 POC {pct_to_poc:.1f}% away  achievable target")
         elif pct_to_poc > 4.0:
-            score -= 0.5; ev.append(f"-0.5 POC {pct_to_poc:.1f}% away — R:R stretched")
+            score -= 0.5; ev.append(f"-0.5 POC {pct_to_poc:.1f}% away  R:R stretched")
 
-        # Discount zone — price in lower half of daily range (room to rise)
+        # Discount zone  price in lower half of daily range (room to rise)
         if range_pct < 35:
-            score += 0.8; ev.append(f"+0.8 deep discount {range_pct:.0f}% — strong pullback entry")
+            score += 0.8; ev.append(f"+0.8 deep discount {range_pct:.0f}%  strong pullback entry")
         elif range_pct < 50:
             score += 0.4; ev.append(f"+0.4 discount zone {range_pct:.0f}%")
 
-        # RSI — want recovery, not still in freefall
+        # RSI  want recovery, not still in freefall
         if 42 <= rsi <= 58:
             score += 0.5; ev.append(f"+0.5 RSI recovery range {rsi:.0f}")
         elif 35 <= rsi < 42:
             score += 0.3; ev.append(f"+0.3 RSI recovering {rsi:.0f}")
         elif rsi < 30:
-            score -= 1.5; ev.append(f"-1.5 RSI deeply oversold {rsi:.0f} — falling knife")
+            score -= 1.5; ev.append(f"-1.5 RSI deeply oversold {rsi:.0f}  falling knife")
         elif rsi > 65:
-            score -= 0.8; ev.append(f"-0.8 RSI elevated {rsi:.0f} — reversion window closing")
+            score -= 0.8; ev.append(f"-0.8 RSI elevated {rsi:.0f}  reversion window closing")
 
         # Volume participation
         if vol_ratio >= 1.2:
             score += 0.5; ev.append(f"+0.5 volume pickup {vol_ratio:.1f}x")
         elif vol_ratio < 0.7:
-            score -= 0.5; ev.append(f"-0.5 thin volume {vol_ratio:.1f}x — no conviction")
+            score -= 0.5; ev.append(f"-0.5 thin volume {vol_ratio:.1f}x  no conviction")
 
         # Momentum still falling? Penalise catching the knife
         if ema9 < ema21 and macd_hist < 0:
-            score -= 1.0; ev.append("-1.0 EMA bearish + MACD negative — momentum still down")
+            score -= 1.0; ev.append("-1.0 EMA bearish + MACD negative  momentum still down")
         elif ema9 > ema21:
-            score += 0.5; ev.append("+0.5 EMA9>EMA21 — pullback in uptrend, with-trend reversion")
+            score += 0.5; ev.append("+0.5 EMA9>EMA21  pullback in uptrend, with-trend reversion")
 
         return round(max(0.0, min(10.0, score)), 1), ev
 

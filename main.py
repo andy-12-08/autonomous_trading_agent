@@ -24,7 +24,7 @@ def graceful_exit(sig, frame):
     Returns:
         Does not return; calls sys.exit(0).
     """
-    log.info("Shutdown signal received — stopping bot")
+    log.info("Shutdown signal received  stopping bot")
     sys.exit(0)
 
 
@@ -58,7 +58,7 @@ def main():
         suffix += "  [DRY-RUN]"
     if args.force:
         suffix += "  [FORCE]"
-    log.info("Autonomous Stock Trading Bot — starting up%s", suffix)
+    log.info("Autonomous Stock Trading Bot  starting up%s", suffix)
     log.info(
         "Account target: $%.0f | Max daily deploy: $%.0f",
         config.ACCOUNT_SIZE,
@@ -118,7 +118,7 @@ def main():
         max_instances=1,
     )
 
-    log.info("Scheduler started — position management every 2 min, scan every 5 min")
+    log.info("Scheduler started  position management every 2 min, scan every 5 min")
     scheduler.start()
 
     try:
@@ -134,7 +134,7 @@ def main():
         # expires on Alpaca's end.
         log.info("Closing news stream...")
         news_stream.stop(timeout=5.0)
-        log.info("News stream closed — exiting")
+        log.info("News stream closed  exiting")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from datetime import date as _date
 
 import config
 from core.database import log
@@ -9,6 +8,8 @@ from core.database import log
 from analysis.patterns import PatternsMixin
 
 class IndicatorEngine(PatternsMixin):
+    """Compute technical indicators and summarize them for scanner and scorer layers."""
+
     @staticmethod
     def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -37,25 +38,25 @@ class IndicatorEngine(PatternsMixin):
         low   = df["low"]
         vol   = df["volume"]
 
-        # ── Trend EMAs ────────────────────────────────────────────────────────────
+        # -- Trend EMAs ------------------------------------------------------------
         df["ema9"]  = close.ewm(span=9,  adjust=False).mean()
         df["ema21"] = close.ewm(span=21, adjust=False).mean()
         df["ema50"] = close.ewm(span=50, adjust=False).mean()
 
-        # ── MACD (12/26/9) ────────────────────────────────────────────────────────
+        # -- MACD (12/26/9) --------------------------------------------------------
         ema12 = close.ewm(span=12, adjust=False).mean()
         ema26 = close.ewm(span=26, adjust=False).mean()
         df["macd"]        = ema12 - ema26
         df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
         df["macd_hist"]   = df["macd"] - df["macd_signal"]
 
-        # ── RSI (14, computed via EMA smoothing) ──────────────────────────────────
+        # -- RSI (14, computed via EMA smoothing) ----------------------------------
         delta = close.diff()
         avg_g = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
         avg_l = (-delta).clip(lower=0).ewm(com=13, adjust=False).mean()
         df["rsi"] = 100 - 100 / (1 + avg_g / avg_l.replace(0, np.nan))
 
-        # ── Bollinger Bands (20, 2σ) ──────────────────────────────────────────────
+        # -- Bollinger Bands (20, 2s) ----------------------------------------------
         sma20        = close.rolling(20).mean()
         std20        = close.rolling(20).std()
         df["bb_mid"] = sma20
@@ -63,7 +64,7 @@ class IndicatorEngine(PatternsMixin):
         df["bb_lo"]  = sma20 - 2 * std20
         df["bb_pct"] = (close - df["bb_lo"]) / (df["bb_up"] - df["bb_lo"])
 
-        # ── ATR (14, EMA-smoothed true range) ────────────────────────────────────
+        # -- ATR (14, EMA-smoothed true range) ------------------------------------
         tr = pd.concat([
             high - low,
             (high - close.shift()).abs(),
@@ -71,11 +72,11 @@ class IndicatorEngine(PatternsMixin):
         ], axis=1).max(axis=1)
         df["atr"] = tr.ewm(com=13, adjust=False).mean()
 
-        # ── Volume ratio: today's cumulative volume vs expected pace ─────────────
+        # -- Volume ratio: today's cumulative volume vs expected pace -------------
         df["vol_sma20"] = vol.rolling(20).mean()
 
         # Scalar time-adjusted vol_ratio: today's cumulative volume vs expected pace.
-        # Only the last-bar value is used downstream — no need for a full time series.
+        # Only the last-bar value is used downstream  no need for a full time series.
         _last_ts   = df.index[-1]
         _et_last   = _last_ts.tz_convert(config.ET) if df.index.tz is not None else _last_ts
         # Today's session open as a UTC-comparable timestamp
@@ -88,31 +89,31 @@ class IndicatorEngine(PatternsMixin):
         _avg_dvol    = float(df["vol_sma20"].iloc[-1]) * 78
         _expected    = _avg_dvol * (_elapsed / 390.0)
         if _today_vol == 0 and _today_bars > 0:
-            # Today's bars exist but all report zero volume — IEX data gap.
+            # Today's bars exist but all report zero volume  IEX data gap.
             # Fall back to neutral rather than falsely vetoing the symbol.
             log.warning("vol_ratio IEX gap: %d today-bars all zero volume "
-                        "(avg_dvol=%.0f expected=%.0f elapsed=%dm) — using 1.0",
+                        "(avg_dvol=%.0f expected=%.0f elapsed=%dm)  using 1.0",
                         _today_bars, _avg_dvol, _expected, _elapsed)
             _vol_ratio = 1.0
         elif _expected > 0:
             _vol_ratio = min(_today_vol / _expected, 10.0)
         elif _today_bars > 0:
-            # No historical volume average (all bars zero) but today has bars — data gap.
-            log.warning("vol_ratio IEX gap: avg_dvol=0 with %d today-bars — using 1.0", _today_bars)
+            # No historical volume average (all bars zero) but today has bars  data gap.
+            log.warning("vol_ratio IEX gap: avg_dvol=0 with %d today-bars  using 1.0", _today_bars)
             _vol_ratio = 1.0
         else:
             _vol_ratio = 0.0
         df["vol_ratio"] = _vol_ratio
 
-        # ── VWAP (intraday reset — cumulates per calendar day, not across days) ───
-        _day_key = [t.date() for t in df.index]   # list of Python date objects — groupby key
+        # -- VWAP (intraday reset  cumulates per calendar day, not across days) ---
+        _day_key = [t.date() for t in df.index]   # list of Python date objects  groupby key
         tp = (high + low + close) / 3
         df["vwap"] = (
             (tp * vol).groupby(_day_key).cumsum()
             / vol.groupby(_day_key).cumsum()
         )
 
-        # ── VWAP reclaim detection ────────────────────────────────────────────────
+        # -- VWAP reclaim detection ------------------------------------------------
         # True on bars where price crosses BACK above VWAP after being below it.
         # This is the institutional mean-reversion entry signal (VWAP reclaim long).
         df["vwap_cross_up"] = (
@@ -120,10 +121,10 @@ class IndicatorEngine(PatternsMixin):
             (df["close"].shift(1) <= df["vwap"].shift(1))
         ).fillna(False)
 
-        # ── 10-bar price momentum ─────────────────────────────────────────────────
+        # -- 10-bar price momentum -------------------------------------------------
         df["mom10"] = close.pct_change(10, fill_method=None) * 100
 
-        # ── Gap detection (today's open vs prior session's last close) ────────────
+        # -- Gap detection (today's open vs prior session's last close) ------------
         try:
             # Use UTC-midnight anchor (no per-row date objects) to split today vs prior
             _today_mask  = df.index >= _utc_open
@@ -152,7 +153,7 @@ class IndicatorEngine(PatternsMixin):
             df["first_bar_high"] = float(df["high"].iloc[-1])
             df["first_bar_low"]  = float(df["low"].iloc[-1])
 
-        # ── 30-minute Opening Range Breakout (ORB-30) ─────────────────────────────
+        # -- 30-minute Opening Range Breakout (ORB-30) -----------------------------
         # Institutions use the first 30 minutes (6 bars at 5-min) to establish the
         # genuine opening range after the noisy first-bar chaos settles.
         # A breakout above orb_30_high with volume is the standard gap-and-go signal.
@@ -175,7 +176,7 @@ class IndicatorEngine(PatternsMixin):
                         idx_et = (dti.tz_convert(config.ET) if dti.tz
                                   else dti.tz_localize("UTC").tz_convert(config.ET))
                         bar6_t = idx_et[t_pos[5]]
-                        # Valid once the 6th bar (9:55–10:00) is present
+                        # Valid once the 6th bar (9:5510:00) is present
                         orb_30_valid_val = (
                             bar6_t.hour > 9 or
                             (bar6_t.hour == 9 and bar6_t.minute >= 55)
@@ -213,7 +214,7 @@ class IndicatorEngine(PatternsMixin):
         RS = stock's N-bar return / SPY's N-bar return.
         Values above 1.0 indicate the stock is outperforming the broad market
         (institutional accumulation signal). Negative values mean the stock is
-        falling while SPY rises — a distribution warning, avoid longs.
+        falling while SPY rises  a distribution warning, avoid longs.
 
         Args:
             df_stock: 5-min OHLCV DataFrame for the candidate stock.
@@ -222,7 +223,7 @@ class IndicatorEngine(PatternsMixin):
 
         Returns:
             RS ratio rounded to 2 decimal places, or None when SPY is
-            essentially flat (abs return < 0.05%) — dividing by near-zero
+            essentially flat (abs return < 0.05%)  dividing by near-zero
             produces meaningless extreme values.
         """
         try:
@@ -244,7 +245,7 @@ class IndicatorEngine(PatternsMixin):
         Derive the trend bias from a higher-timeframe DataFrame (15-min or daily).
 
         Reuses compute_indicators() and get_signal_summary() as the single source
-        of truth for indicator math — no parallel calculation paths.
+        of truth for indicator math  no parallel calculation paths.
 
         Args:
             df: OHLCV DataFrame at the higher timeframe (15-min or daily).
@@ -252,11 +253,11 @@ class IndicatorEngine(PatternsMixin):
 
         Returns:
             Compact dict used by signal_scorer for multi-timeframe confirmation:
-              ema_bull   – True when EMA9 > EMA21 (short-term uptrend)
-              above_vwap – True when close > VWAP
-              macd_bull  – True when MACD histogram is positive
-              rsi        – RSI value (float)
-              ema50_bull – True when close > EMA50, or None if EMA50 is zero
+              ema_bull    True when EMA9 > EMA21 (short-term uptrend)
+              above_vwap  True when close > VWAP
+              macd_bull   True when MACD histogram is positive
+              rsi         RSI value (float)
+              ema50_bull  True when close > EMA50, or None if EMA50 is zero
             Empty dict on any failure or insufficient data.
         """
         if df is None or df.empty or len(df) < 10:
@@ -328,7 +329,7 @@ class IndicatorEngine(PatternsMixin):
             "mom10":       round(float(last["mom10"]), 3),
             "above_vwap":  bool(price > float(last["vwap"])),
             "ema_trend":   "bullish" if last["ema9"] > last["ema21"] else "bearish",
-            # ── Gap / opening range ───────────────────────────────────────────────
+            # -- Gap / opening range -----------------------------------------------
             "gap_pct":        round(float(last.get("gap_pct",        0)), 2),
             "today_open":     round(float(last.get("today_open",     0)), 4),
             "first_bar_high": round(float(last.get("first_bar_high", 0)), 4),
@@ -337,18 +338,18 @@ class IndicatorEngine(PatternsMixin):
                               if last.get("today_open", 0) > 0 else False,
             "above_first_bar_high": bool(price >= float(last.get("first_bar_high", 0)))
                                      if last.get("first_bar_high", 0) > 0 else False,
-            # ── 30-minute Opening Range Breakout ──────────────────────────────────
+            # -- 30-minute Opening Range Breakout ----------------------------------
             # orb_30_valid = True only after all 6 opening bars (10:00 ET) are recorded.
-            # above_orb_30 = price cleared the institutional range — primary ORB signal.
+            # above_orb_30 = price cleared the institutional range  primary ORB signal.
             "orb_30_high":      round(orb_30_high, 4),
             "orb_30_low":       round(orb_30_low,  4),
             "orb_30_valid":     orb_30_valid,
             "orb_30_width_pct": round(float(last.get("orb_30_width_pct", 0)), 3),
             "above_orb_30":     bool(price > orb_30_high) if (orb_30_valid and orb_30_high > 0) else False,
-            # ── VWAP reclaim ──────────────────────────────────────────────────────
+            # -- VWAP reclaim ------------------------------------------------------
             # True when price crossed back above VWAP this bar after being below it.
             "vwap_cross_up":   bool(last.get("vwap_cross_up", False)),
-            # Volume on the bar BEFORE the current one — used to detect single-candle
+            # Volume on the bar BEFORE the current one  used to detect single-candle
             # volume spikes vs sustained buying pressure on VWAP reclaim setups.
             "prev_vol_ratio":  round(float(prev.get("vol_ratio", 1.0)), 2),
         }

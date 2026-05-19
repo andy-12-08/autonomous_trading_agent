@@ -25,7 +25,7 @@ class MarketDataMixin:
 
         Args:
             symbol: Ticker symbol to fetch bars for.
-            timeframe: Bar width — one of "1Min", "5Min", "15Min", "1Hour", "1Day".
+            timeframe: Bar width  one of "1Min", "5Min", "15Min", "1Hour", "1Day".
             days: Number of calendar days of history to request.
 
         Returns:
@@ -91,7 +91,7 @@ class MarketDataMixin:
         end   = datetime.now(config.ET)
         start = end - timedelta(days=days)
 
-        _BATCH_SIZE    = 25   # symbols per request — keeps IEX response time <15 s
+        _BATCH_SIZE    = 25   # symbols per request  keeps IEX response time <15 s
         _BATCH_TIMEOUT = 30   # per-batch wall-clock limit
         batches = [symbols[i:i + _BATCH_SIZE] for i in range(0, len(symbols), _BATCH_SIZE)]
 
@@ -127,7 +127,7 @@ class MarketDataMixin:
                         result[batch[0]] = df_all.sort_index()
                 except _cf.TimeoutError:
                     timed_out += 1
-                    log.warning("get_bars_multi batch timed out (%d symbols, %s) — skipping",
+                    log.warning("get_bars_multi batch timed out (%d symbols, %s)  skipping",
                                 len(batch), timeframe)
                 except Exception as e:
                     failed += 1
@@ -136,10 +136,10 @@ class MarketDataMixin:
 
         total = len(batches)
         if timed_out or failed:
-            log.warning("get_bars_multi: %d/%d batches timed out, %d/%d failed — got %d/%d symbols",
+            log.warning("get_bars_multi: %d/%d batches timed out, %d/%d failed  got %d/%d symbols",
                         timed_out, total, failed, total, len(result), len(symbols))
         if not result:
-            log.warning("get_bars_multi: all %d batches failed (%s) — returning empty", total, timeframe)
+            log.warning("get_bars_multi: all %d batches failed (%s)  returning empty", total, timeframe)
         return result
 
     def get_latest_price(self, symbol: str) -> float | None:
@@ -269,10 +269,10 @@ class MarketDataMixin:
     def get_all_tradeable_symbols(self) -> list[str]:
         """Return all active, tradeable US equity symbols on NYSE and NASDAQ.
 
-        Result is cached for the trading session — the asset list doesn't change intraday.
+        Result is cached for the trading session  the asset list doesn't change intraday.
 
         Returns:
-            List of ticker symbol strings (alpha-only, 1–5 characters) that are
+            List of ticker symbol strings (alpha-only, 15 characters) that are
             active and tradeable on NYSE, NASDAQ, ARCA, or BATS.
         """
         today = date.today().isoformat()
@@ -330,7 +330,7 @@ class MarketDataMixin:
                 _pool.shutdown(wait=False)
             except _cf.TimeoutError:
                 _pool.shutdown(wait=False)
-                log.warning("Snapshot batch timed out after %ds (offset=%d n=%d) — skipping",
+                log.warning("Snapshot batch timed out after %ds (offset=%d n=%d)  skipping",
                             _SNAP_TIMEOUT, i, len(batch))
                 time.sleep(0.2)
                 continue
@@ -353,7 +353,7 @@ class MarketDataMixin:
                     if prev_close > 0:
                         change_pct = (price - prev_close) / prev_close * 100
                     else:
-                        # IEX snapshot does not populate prev_daily_bar — fall back to
+                        # IEX snapshot does not populate prev_daily_bar  fall back to
                         # today's open so we can still identify intraday movers.
                         day_open = float(getattr(daily, "open", 0) or 0)
                         change_pct = ((price - day_open) / day_open * 100
@@ -375,8 +375,8 @@ class MarketDataMixin:
 
         Bracket stop/TP fills happen on child legs, not the parent order.
         This function checks three sources in order:
-          1. Closed orders — parent AND nested legs
-          2. Account activities (FILL type) — most reliable for bracket legs
+          1. Closed orders  parent AND nested legs
+          2. Account activities (FILL type)  most reliable for bracket legs
 
         Args:
             symbol:   Ticker symbol to check for filled sell orders.
@@ -417,7 +417,7 @@ class MarketDataMixin:
                 }
             return None
 
-        # Pass 1: closed orders — check parent orders and all bracket legs.
+        # Pass 1: closed orders  check parent orders and all bracket legs.
         # Sort newest-first so the most recent fill is returned when there are
         # multiple closed sells for the same symbol (e.g. partial + full exit).
         try:
@@ -440,12 +440,12 @@ class MarketDataMixin:
         except Exception as e:
             log.warning("get_last_filled_sell pass1 failed for %s: %s", symbol, e)
 
-        # Pass 2: Alpaca /v2/account/activities/FILL REST endpoint — catches
+        # Pass 2: Alpaca /v2/account/activities/FILL REST endpoint  catches
         # bracket leg fills that don't surface in the top-level orders list.
         # Use `after` (ISO timestamp) instead of `date` so overnight fills are
         # included regardless of which calendar day they executed on.
-        # Strip any /v2 suffix from the base URL — if ALPACA_ENDPOINT already
-        # ends with /v2 the concatenated path would be /v2/v2/… (404).
+        # Strip any /v2 suffix from the base URL  if ALPACA_ENDPOINT already
+        # ends with /v2 the concatenated path would be /v2/v2/ (404).
         _api_root = config.ALPACA_BASE_URL.rstrip("/")
         if _api_root.endswith("/v2"):
             _api_root = _api_root[:-3]

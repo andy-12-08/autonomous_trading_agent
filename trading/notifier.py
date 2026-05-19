@@ -89,15 +89,15 @@ class Notifier:
         overall_exp = self.expectancy.compute_expectancy(all_dec)
         by_setup    = self.expectancy.compute_expectancy_by_setup(all_dec)
 
-        status_line = "✅ PROFITABLE DAY" if net_pnl >= 0 else "🔴 LOSS DAY"
+        status_line = "? PROFITABLE DAY" if net_pnl >= 0 else "?? LOSS DAY"
 
-        sep = "─" * 54
+        sep = "-" * 54
 
         lines = [
-            f"╔══════════════════════════════════════════════════════╗",
-            f"  AUTONOMOUS TRADING BOT — DAILY REPORT",
+            f"+------------------------------------------------------+",
+            f"  AUTONOMOUS TRADING BOT  DAILY REPORT",
             f"  {data['today']}",
-            f"╚══════════════════════════════════════════════════════╝",
+            f"+------------------------------------------------------+",
             f"  {status_line}",
             "",
             sep,
@@ -126,7 +126,7 @@ class Notifier:
 
         if overall_exp:
             sign   = "+" if overall_exp["is_positive"] else ""
-            status = "POSITIVE EDGE ✓" if overall_exp["is_positive"] else "NEGATIVE EDGE ✗ — REVIEW STRATEGY"
+            status = "POSITIVE EDGE ?" if overall_exp["is_positive"] else "NEGATIVE EDGE ?  REVIEW STRATEGY"
             lines += [
                 sep,
                 "  ALL-TIME EXPECTANCY",
@@ -145,7 +145,7 @@ class Notifier:
             for st, exp in sorted(by_setup.items(),
                                    key=lambda x: x[1]["expectancy"], reverse=True):
                 sign = "+" if exp["is_positive"] else ""
-                flag = "✓" if exp["is_positive"] else "✗ SUPPRESS"
+                flag = "?" if exp["is_positive"] else "? SUPPRESS"
                 lines.append(
                     f"  {st[:24]:24s} | E={sign}${exp['expectancy']:5.2f} "
                     f"WR={exp['win_rate']:.0%} "
@@ -156,13 +156,13 @@ class Notifier:
         if p.get("history_lessons"):
             lines += [sep, "  HISTORY LESSONS APPLIED TODAY", sep]
             for lesson in p["history_lessons"]:
-                lines.append(f"  • {lesson}")
+                lines.append(f"   {lesson}")
             lines.append("")
 
         if p.get("special_warnings"):
-            lines += [sep, "  ⚠ WARNINGS FLAGGED", sep]
+            lines += [sep, "  ? WARNINGS FLAGGED", sep]
             for w in p["special_warnings"]:
-                lines.append(f"  ⚠ {w}")
+                lines.append(f"  ? {w}")
             lines.append("")
 
         executed = [d for d in dec if d.get("action") in ("BUY", "SELL", "PARTIAL_SELL")]
@@ -170,7 +170,7 @@ class Notifier:
             lines += [sep, "  TODAY'S TRADE LOG", sep]
             for d in executed:
                 pnl_str = f"${d['pnl']:+.2f}" if d.get("pnl") is not None else "  open"
-                setup   = d.get("setup_type") or "—"
+                setup   = d.get("setup_type") or ""
                 lines.append(
                     f"  {d['ts'][11:19]} {d['action']:12s} {d['symbol']:6s} "
                     f"@ ${d.get('price') or 0:.2f}  pnl={pnl_str:>8}  [{setup}]"
@@ -181,7 +181,7 @@ class Notifier:
         if drift:
             lines += [
                 sep,
-                "  ⚠  CONFIDENCE DRIFT DETECTED",
+                "  ?  CONFIDENCE DRIFT DETECTED",
                 sep,
                 f"  Recent avg  : {drift['recent_avg']}/10  (last 7 days, n={drift['recent_n']})",
                 f"  Baseline    : {drift['baseline_avg']}/10  (90-day avg, n={drift['baseline_n']})",
@@ -240,26 +240,26 @@ class Notifier:
 
         now_et = datetime.now(config.ET).strftime("%Y-%m-%d %H:%M:%S ET")
 
-        sep  = "─" * 54
+        sep  = "-" * 54
         cost = price * qty
 
         if action == "BUY":
             risk_dollars = (price - stop_loss) * qty if stop_loss else 0
-            subject = f"📈 BUY {symbol} × {qty:.0f} @ ${price:.2f} | risk ${risk_dollars:.0f}"
+            subject = f"?? BUY {symbol}  {qty:.0f} @ ${price:.2f} | risk ${risk_dollars:.0f}"
         elif pnl is not None and pnl >= 0:
             pnl_pct = pnl / cost * 100 if cost else 0
-            prefix  = "💰 PARTIAL SELL" if action == "PARTIAL_SELL" else "✅ SELL"
+            prefix  = "?? PARTIAL SELL" if action == "PARTIAL_SELL" else "? SELL"
             subject = f"{prefix} {symbol}  +${pnl:.2f} (+{pnl_pct:.1f}%)"
         else:
             pnl_pct = (pnl / cost * 100) if (pnl and cost) else 0
-            subject = f"🔴 SELL {symbol}  ${pnl:.2f} ({pnl_pct:.1f}%)" if pnl is not None \
-                      else f"📤 {action} {symbol} @ ${price:.2f}"
+            subject = f"?? SELL {symbol}  ${pnl:.2f} ({pnl_pct:.1f}%)" if pnl is not None \
+                      else f"?? {action} {symbol} @ ${price:.2f}"
 
         lines = [
-            f"╔══════════════════════════════════════════════════════╗",
-            f"  TRADE ALERT — {action}",
+            f"+------------------------------------------------------+",
+            f"  TRADE ALERT  {action}",
             f"  {symbol}  |  {now_et}",
-            f"╚══════════════════════════════════════════════════════╝",
+            f"+------------------------------------------------------+",
             "",
             sep,
             f"  TRADE DETAILS",
@@ -317,7 +317,7 @@ class Notifier:
                     with smtplib.SMTP_SSL(self.config.SMTP_HOST, 465, timeout=10) as server:
                         server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
                         server.send_message(msg)
-                    log.info("Trade alert sent → %s  [%s %s @ $%.2f]",
+                    log.info("Trade alert sent ? %s  [%s %s @ $%.2f]",
                              self.config.RECIPIENT_EMAIL, action, symbol, price)
                     return
                 except Exception:
@@ -327,7 +327,7 @@ class Notifier:
                             server.starttls()
                             server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
                             server.send_message(msg)
-                        log.info("Trade alert sent (STARTTLS) → %s  [%s %s @ $%.2f]",
+                        log.info("Trade alert sent (STARTTLS) ? %s  [%s %s @ $%.2f]",
                                  self.config.RECIPIENT_EMAIL, action, symbol, price)
                         return
                     except Exception as e2:
@@ -344,7 +344,7 @@ class Notifier:
         """
         if not self.config.SMTP_USER or not self.config.SMTP_PASS:
             log.warning(
-                "Daily email not sent — configure SMTP_USER and SMTP_PASS in .env "
+                "Daily email not sent  configure SMTP_USER and SMTP_PASS in .env "
                 "(Gmail: use an App Password, not your account password)"
             )
             return
@@ -353,7 +353,7 @@ class Notifier:
             data    = self._load_today_data()
             body    = self._build_body(data)
             net_pnl = data["summary"].get("net_pnl", 0)
-            emoji   = "✅" if net_pnl >= 0 else "🔴"
+            emoji   = "?" if net_pnl >= 0 else "??"
             subject = f"{emoji} Trading Bot {data['today']} | P&L ${net_pnl:+.2f}"
 
             msg            = MIMEText(body, "plain", "utf-8")
@@ -369,7 +369,7 @@ class Notifier:
                         with smtplib.SMTP_SSL(self.config.SMTP_HOST, 465, timeout=10) as server:
                             server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
                             server.send_message(msg)
-                        log.info("Daily summary email sent → %s  (P&L $%+.2f)",
+                        log.info("Daily summary email sent ? %s  (P&L $%+.2f)",
                                  self.config.RECIPIENT_EMAIL, net_pnl)
                         return
                     except Exception:
@@ -379,7 +379,7 @@ class Notifier:
                                 server.starttls()
                                 server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
                                 server.send_message(msg)
-                            log.info("Daily summary sent (STARTTLS) → %s  (P&L $%+.2f)",
+                            log.info("Daily summary sent (STARTTLS) ? %s  (P&L $%+.2f)",
                                      self.config.RECIPIENT_EMAIL, net_pnl)
                             return
                         except Exception as e2:

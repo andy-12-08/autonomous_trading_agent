@@ -39,7 +39,7 @@ def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Bac
     Returns:
         A tuple of (TradingOrchestrator, Backtester, NewsStream). The caller must
         call news_stream.stop() on shutdown so the WebSocket is closed cleanly
-        before the process exits — this prevents 'connection limit exceeded' on
+        before the process exits  this prevents 'connection limit exceeded' on
         the next startup.
     """
     db = Database(config.DB_PATH)

@@ -27,7 +27,7 @@ class RiskManager:
             total_equity: Account equity.
             trades_today: Completed BUY count today.
             reward_to_risk: Planned R:R.
-            signal_confidence: AI confidence 1–10.
+            signal_confidence: AI confidence 110.
             vol_ratio: Volume vs average.
             rsi: Latest RSI.
             spread_pct: Bid/ask spread fraction, optional.
@@ -40,12 +40,12 @@ class RiskManager:
         cost = price * qty
 
         if daily_pnl <= -config.DAILY_DRAWDOWN_LIMIT:
-            return False, f"Daily drawdown limit hit (${daily_pnl:.0f} ≤ -${config.DAILY_DRAWDOWN_LIMIT:.0f})"
+            return False, f"Daily drawdown limit hit (${daily_pnl:.0f} = -${config.DAILY_DRAWDOWN_LIMIT:.0f})"
 
         # Rule 6: early warning at 1.5%
         warning_level = total_equity * 0.015
         if daily_pnl <= -warning_level:
-            log.warning("⚠ Drawdown warning: daily P&L at $%.0f (%.1f%% of equity) — "
+            log.warning("? Drawdown warning: daily P&L at $%.0f (%.1f%% of equity)  "
                         "tighten stops, no new aggressive entries",
                         daily_pnl, abs(daily_pnl / total_equity * 100))
 
@@ -53,7 +53,7 @@ class RiskManager:
         if trades_today >= config.MAX_TRADES_PER_DAY:
             return False, f"Max trades/day ({config.MAX_TRADES_PER_DAY}) reached"
 
-        # Rule 7: total exposure cap (≤ MAX_TOTAL_EXPOSURE_PCT of equity)
+        # Rule 7: total exposure cap (= MAX_TOTAL_EXPOSURE_PCT of equity)
         if (deployed_today + cost) > total_equity * config.MAX_TOTAL_EXPOSURE_PCT:
             cap = total_equity * config.MAX_TOTAL_EXPOSURE_PCT
             return False, (f"Exposure cap: ${deployed_today + cost:.0f} "
@@ -83,7 +83,7 @@ class RiskManager:
                 return False, f"Risk ${risk_dollars:.0f} > hard ceiling ${config.MAX_RISK_PER_TRADE:.0f}"
             stop_pct = (price - stop_loss) / price
             if stop_pct > 0.04:
-                return False, f"Stop {stop_pct:.1%} too wide — R:R destroyed"
+                return False, f"Stop {stop_pct:.1%} too wide  R:R destroyed"
 
         # Reward-to-risk minimum
         if reward_to_risk is not None and reward_to_risk < config.MIN_REWARD_TO_RISK:
@@ -94,21 +94,21 @@ class RiskManager:
             return False, (f"Signal confidence {signal_confidence}/10 "
                            f"< minimum {config.MIN_SIGNAL_CONFIDENCE}")
 
-        # Volume confirmation — threshold relaxed in early window and for gap-and-go setups
+        # Volume confirmation  threshold relaxed in early window and for gap-and-go setups
         _vol_floor = min_vol_ratio_override if min_vol_ratio_override is not None else config.MIN_VOL_RATIO_ENTRY
         if vol_ratio is not None and vol_ratio < _vol_floor:
             return False, (f"vol_ratio {vol_ratio:.2f} < {_vol_floor:.2f} "
-                           f"— insufficient volume")
+                           f" insufficient volume")
 
         # Structural resistance proximity check: skip if price is within 0.5% of a key wall.
-        # RSI is no longer a hard veto — institutions buy through high RSI when momentum is real.
+        # RSI is no longer a hard veto  institutions buy through high RSI when momentum is real.
         if key_levels and price > 0:
             nearest_res = key_levels.get("nearest_resistance")
             if nearest_res and nearest_res > price:
                 distance_pct = (nearest_res - price) / price
-                if distance_pct < 0.005:  # within 0.5% of resistance → poor R:R entry
+                if distance_pct < 0.005:  # within 0.5% of resistance ? poor R:R entry
                     return False, (f"Price within {distance_pct:.2%} of resistance ${nearest_res:.2f} "
-                                   f"— insufficient headroom for R:R (RSI={rsi:.0f})")
+                                   f" insufficient headroom for R:R (RSI={rsi:.0f})")
 
         # Rule 1: bid-ask spread must be tight
         if spread_pct is not None and spread_pct > config.MAX_SPREAD_PCT:
@@ -164,17 +164,17 @@ class RiskManager:
         Returns:
             Tuple of (approved: bool, reason: str).
         """
-        # Stops only move in the direction of profit — never widen (Rule 5)
+        # Stops only move in the direction of profit  never widen (Rule 5)
         if new_stop <= current_stop:
-            return False, (f"Stop rejected: new {new_stop:.2f} ≤ current {current_stop:.2f} "
-                           f"(rule 5 — never widen)")
+            return False, (f"Stop rejected: new {new_stop:.2f} = current {current_stop:.2f} "
+                           f"(rule 5  never widen)")
         return True, "OK"
 
     @staticmethod
     def volatility_size_factor(atr: float, price: float) -> tuple[float, str]:
         """Map per-stock ATR to a position-size scaling factor (Rule 5).
 
-        Higher volatility → smaller size so that dollar risk stays constant
+        Higher volatility ? smaller size so that dollar risk stays constant
         regardless of how wide the bars are.
 
         Args:
@@ -203,9 +203,9 @@ class RiskManager:
 
         Sizing waterfall:
           1. Risk-size to target 0.75% of equity (hard ceiling $100 per trade).
-          2. Apply per-stock ATR regime factor (high volatility → smaller position).
-          3. Apply AI confidence scale (higher conviction → proportionally larger).
-          4. Apply VIX regime factor (market-wide fear → shrink all positions).
+          2. Apply per-stock ATR regime factor (high volatility ? smaller position).
+          3. Apply AI confidence scale (higher conviction ? proportionally larger).
+          4. Apply VIX regime factor (market-wide fear ? shrink all positions).
           5. Cap at the minimum of: MAX_POSITION_SIZE, available settled cash,
              remaining daily capital headroom, and remaining exposure headroom.
 
@@ -216,7 +216,7 @@ class RiskManager:
             deployed_today: Dollar amount already committed this session.
             total_equity: Account equity at cycle start.
             atr: 14-period ATR; 0.0 triggers a percentage fallback.
-            confidence: AI signal confidence (1–10); maps to a size scale factor.
+            confidence: AI signal confidence (110); maps to a size scale factor.
             vix_factor: Regime-based multiplier from market_guard.get_vix_regime().
             kelly_factor: Half-Kelly multiplier from historical win rate/R:R (default 1.0).
 
@@ -224,7 +224,7 @@ class RiskManager:
             Whole number of shares (float with no fractional part). Returns 0.0
             if risk_per_share <= 0 or the available capital is exhausted.
         """
-        # ATR-aware stop fallback: use 1.5× ATR when no stop is provided,
+        # ATR-aware stop fallback: use 1.5 ATR when no stop is provided,
         # falling back to the percentage floor if ATR is unavailable.
         if not stop_loss or stop_loss >= price:
             if atr > 0:
@@ -242,29 +242,29 @@ class RiskManager:
                              config.MAX_RISK_PER_TRADE)
         shares_by_risk = target_risk / risk_per_share
 
-        # Apply volatility regime (Rule 5: size ∝ 1/vol)
+        # Apply volatility regime (Rule 5: size ? 1/vol)
         vol_factor, regime = RiskManager.volatility_size_factor(atr, price)
         shares_by_risk *= vol_factor
         if regime not in ("normal", "unknown"):
-            log.info("Vol regime '%s' → size factor %.2f", regime, vol_factor)
+            log.info("Vol regime '%s' ? size factor %.2f", regime, vol_factor)
 
-        # Apply confidence scale (higher conviction → proportionally larger size)
+        # Apply confidence scale (higher conviction ? proportionally larger size)
         conf_factor = config.CONFIDENCE_SIZE_SCALE.get(confidence, 0.55)
         shares_by_risk *= conf_factor
         if conf_factor != 1.0:
-            log.info("Confidence %d/10 → size factor %.2f", confidence, conf_factor)
+            log.info("Confidence %d/10 ? size factor %.2f", confidence, conf_factor)
 
-        # Apply VIX regime factor (market-wide fear → shrink all positions)
+        # Apply VIX regime factor (market-wide fear ? shrink all positions)
         if vix_factor != 1.0:
             shares_by_risk *= vix_factor
-            log.info("VIX regime → size factor %.2f applied", vix_factor)
+            log.info("VIX regime ? size factor %.2f applied", vix_factor)
 
         # Apply Kelly Criterion (half-Kelly, pre-computed by caller from DB win rate + R:R)
         if kelly_factor != 1.0:
             shares_by_risk *= max(0.25, min(kelly_factor, 1.5))
             log.info("Kelly factor %.3f applied to sizing", kelly_factor)
 
-        # Cap by position size limit — use dynamic cap if provided, else config default
+        # Cap by position size limit  use dynamic cap if provided, else config default
         effective_cap  = position_cap if position_cap is not None else config.MAX_POSITION_SIZE
         shares_by_size = effective_cap / price
 
@@ -284,8 +284,8 @@ class RiskManager:
                                   key_levels: dict | None = None) -> tuple[float, float]:
         """ATR-based stop and take-profit with minimum R:R guarantee.
 
-        If key_levels provides a resistance level 1–5% above entry that gives R:R >= 2,
-        use that level (minus 0.2% buffer) as TP — exits before the wall, not into it.
+        If key_levels provides a resistance level 15% above entry that gives R:R >= 2,
+        use that level (minus 0.2% buffer) as TP  exits before the wall, not into it.
         """
         atr           = atr or price * 0.01
         stop_distance = max(atr * 1.5, price * config.DEFAULT_STOP_LOSS_PCT)
@@ -300,7 +300,7 @@ class RiskManager:
                 level_rr = (nearest_res - price) / stop_distance
                 if 0.01 <= res_pct <= 0.05 and level_rr >= config.MIN_REWARD_TO_RISK:
                     level_tp = round(nearest_res * 0.998, 2)
-                    log.info("Level-based TP: resistance=%.2f → TP=%.2f (R:R=%.1f) "
+                    log.info("Level-based TP: resistance=%.2f ? TP=%.2f (R:R=%.1f) "
                              "vs ATR TP=%.2f", nearest_res, level_tp, level_rr, atr_tp)
                     return stop, level_tp
 
@@ -310,7 +310,7 @@ class RiskManager:
     def is_too_volatile(atr: float, price: float) -> bool:
         """Return True when ATR/price exceeds the absolute volatility ceiling.
 
-        Stocks with ATR > MAX_TRADEABLE_ATR_PCT are skipped entirely — sizing
+        Stocks with ATR > MAX_TRADEABLE_ATR_PCT are skipped entirely  sizing
         math breaks down and stops would need to be unreasonably wide.
 
         Args:

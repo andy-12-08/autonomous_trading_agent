@@ -7,9 +7,16 @@ from core.database import log
 
 
 class PreMarketAnalyzer:
+    """Fetch and cache extended-hours gap and pre-market level data."""
+
     PM_GAP_SIGNIFICANT = 0.5
 
     def __init__(self) -> None:
+        """Initialize the analyzer with an empty same-day cache.
+
+        Returns:
+            None.
+        """
         self._cache: dict[str, dict] = {}
         self._cache_date: str = ""
         self._ET = config.ET
@@ -107,7 +114,7 @@ class PreMarketAnalyzer:
                 if prev_close <= 0:
                     continue
 
-                # Today's pre-market bars: 4:00 AM – 9:29 AM ET
+                # Today's pre-market bars: 4:00 AM  9:29 AM ET
                 pm_mask = (
                     (idx.date == today_dt) &
                     (idx.hour >= 4) &
@@ -182,4 +189,4 @@ class PreMarketAnalyzer:
             parts.append("gap up: " + ", ".join(f"{s}({d['gap_pct']:+.1f}%)" for s, d in up))
         if down:
             parts.append("gap down: " + ", ".join(f"{s}({d['gap_pct']:+.1f}%)" for s, d in down))
-        return "pre-market — " + " | ".join(parts) if parts else "pre-market: all flat"
+        return "pre-market  " + " | ".join(parts) if parts else "pre-market: all flat"

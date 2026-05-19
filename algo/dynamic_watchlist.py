@@ -1,5 +1,5 @@
 """
-Dynamic watchlist — persists pre-Claude survivors across sessions.
+Dynamic watchlist  persists pre-Claude survivors across sessions.
 
 Symbols that pass Stage 5 Pre-Claude Mechanical Vetoes are saved daily.
 The next session's morning study uses this list for news headline fetching
@@ -49,7 +49,7 @@ class DynamicWatchlist:
         """
         try:
             if not os.path.exists(self._WATCHLIST_PATH):
-                log.info("Dynamic watchlist: no saved list found — using config.WATCHLIST")
+                log.info("Dynamic watchlist: no saved list found  using config.WATCHLIST")
                 return list(config.WATCHLIST)
 
             with open(self._WATCHLIST_PATH, "r") as f:
@@ -63,7 +63,7 @@ class DynamicWatchlist:
                 delta = (datetime.now(config.ET).date() - date.fromisoformat(saved_date)).days
                 if delta > 3:
                     log.info(
-                        "Dynamic watchlist: saved list from %s is stale (%d days) — using config.WATCHLIST",
+                        "Dynamic watchlist: saved list from %s is stale (%d days)  using config.WATCHLIST",
                         saved_date, delta,
                     )
                     return list(config.WATCHLIST)
@@ -80,7 +80,7 @@ class DynamicWatchlist:
             return merged
 
         except Exception as e:
-            log.warning("Dynamic watchlist load failed (%s) — falling back to config.WATCHLIST", e)
+            log.warning("Dynamic watchlist load failed (%s)  falling back to config.WATCHLIST", e)
             return list(config.WATCHLIST)
 
     def save(self, survivors: list[str]) -> None:

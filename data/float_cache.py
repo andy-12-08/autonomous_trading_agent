@@ -37,14 +37,14 @@ class FloatCache:
         conn.commit()
         conn.close()
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    # -- Public API ------------------------------------------------------------
 
     def get_float_cached(self, symbol: str) -> float | None:
         """Return cached float shares without hitting the network.
 
         Returns the in-process value (fastest), then SQLite, then None when the
         symbol has never been fetched or the cache has expired.  Never blocks
-        on a network call — use prefetch_floats() to fill the cache in bulk.
+        on a network call  use prefetch_floats() to fill the cache in bulk.
 
         Args:
             symbol: Uppercase ticker.
@@ -75,7 +75,7 @@ class FloatCache:
             log.info("FloatCache: all %d symbols already cached", len(symbols))
             return
 
-        log.info("FloatCache: fetching float data for %d symbols…", len(needed))
+        log.info("FloatCache: fetching float data for %d symbols", len(needed))
         fetched = 0
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {pool.submit(self._fetch_and_store, sym): sym for sym in needed}
@@ -108,7 +108,7 @@ class FloatCache:
             return "mid"
         return "large"
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
+    # -- Internal helpers ------------------------------------------------------
 
     def _needs_refresh(self, symbol: str) -> bool:
         with self._lock:

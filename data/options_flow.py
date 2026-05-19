@@ -1,6 +1,6 @@
 """
 Options flow scanner using yfinance (free CBOE data via Yahoo Finance).
-Detects unusual call activity — a leading indicator of institutional positioning.
+Detects unusual call activity  a leading indicator of institutional positioning.
 Results cached for 30 minutes to avoid hammering the API on every scan cycle.
 """
 import yfinance as yf
@@ -15,7 +15,7 @@ class OptionsFlowClient:
     activity as unusual_calls, bullish_flow, bearish_flow, or neutral based on
     put/call ratio and call volume vs open interest.
 
-    Cache TTL is 30 minutes — options chains update continuously intraday but
+    Cache TTL is 30 minutes  options chains update continuously intraday but
     one snapshot per half-hour is sufficient for scan-cycle decisions.
     """
 
@@ -35,7 +35,7 @@ class OptionsFlowClient:
 
         Returns:
             A dict mapping symbol to a dict containing:
-                unusual_calls   -- bool: call volume > 2× open interest today
+                unusual_calls   -- bool: call volume > 2 open interest today
                 put_call_ratio  -- put volume / call volume
                 call_volume     -- total call contracts traded today
                 put_volume      -- total put contracts traded today
@@ -78,7 +78,7 @@ class OptionsFlowClient:
                     continue
 
                 pc_ratio      = put_vol / call_vol if call_vol > 0 else 9.99
-                # Unusual: today's call volume > 2× open interest = net new institutional longs
+                # Unusual: today's call volume > 2 open interest = net new institutional longs
                 unusual_calls = bool(call_oi > 0 and call_vol > call_oi * 2.0)
 
                 if unusual_calls:

@@ -1,12 +1,14 @@
 import numpy as np
 import pandas as pd
-from datetime import date as _date, datetime as _datetime
+from datetime import datetime as _datetime
 
 import config
 from core.database import log
 
 
 class PatternsMixin:
+    """Pattern and structural-level helpers mixed into IndicatorEngine."""
+
     @staticmethod
     def compute_premium_discount(df: pd.DataFrame, lookback: int = 50) -> dict:
         """
@@ -22,11 +24,11 @@ class PatternsMixin:
 
         Returns:
             Dict with keys:
-              range_high  – highest high over the lookback window
-              range_low   – lowest low over the lookback window
-              range_mid   – midpoint ((high + low) / 2)
-              range_pct   – where current price sits (0 = at low, 100 = at high)
-              in_discount – True when price ≤ midpoint (institutional buy zone)
+              range_high   highest high over the lookback window
+              range_low    lowest low over the lookback window
+              range_mid    midpoint ((high + low) / 2)
+              range_pct    where current price sits (0 = at low, 100 = at high)
+              in_discount  True when price = midpoint (institutional buy zone)
             Empty dict if the range is too narrow (< 0.5%) or data insufficient.
         """
         try:
@@ -54,7 +56,7 @@ class PatternsMixin:
     def detect_liquidity_sweep(df: pd.DataFrame, key_levels: dict | None = None,
                                lookback: int = 10) -> dict:
         """
-        Detect a liquidity sweep (stop hunt) reversal — the #1 institutional entry signal.
+        Detect a liquidity sweep (stop hunt) reversal  the #1 institutional entry signal.
 
         Banks engineer price to pierce just below retail stop clusters (prior swing lows,
         ORB lows, round numbers), collect liquidity from retail stop orders, then rapidly
@@ -63,7 +65,7 @@ class PatternsMixin:
 
         Detection criteria:
           1. Price pierces below a key level (prior swing low, ORB low, or VAL from profile).
-          2. Within 1–3 subsequent candles, price closes BACK ABOVE that level.
+          2. Within 13 subsequent candles, price closes BACK ABOVE that level.
           3. The sweep bar or the reversal bar has above-average volume (confirms institutional participation).
 
         Args:
@@ -73,10 +75,10 @@ class PatternsMixin:
 
         Returns:
             Dict with keys when a sweep is detected:
-              liquidity_sweep_detected – True
-              sweep_low   – the level that was swept (now becomes strong support)
-              sweep_entry – suggested entry price (first close back above sweep level)
-              stop_beyond – recommended stop (0.3% below the sweep low, not at it)
+              liquidity_sweep_detected  True
+              sweep_low    the level that was swept (now becomes strong support)
+              sweep_entry  suggested entry price (first close back above sweep level)
+              stop_beyond  recommended stop (0.3% below the sweep low, not at it)
             Empty dict if no sweep is detected or data is insufficient.
         """
         try:
@@ -120,7 +122,7 @@ class PatternsMixin:
                     # Bar pierced below the level
                     if bar_low < level * 0.999 and bar_close > level:
                         high_vol = bar_vol >= avg_vol * 1.2
-                        # Check if next 1–2 bars also confirm close above (pattern holds)
+                        # Check if next 12 bars also confirm close above (pattern holds)
                         subsequent_closes_ok = all(
                             float(window["close"].iloc[j]) > level
                             for j in range(i + 1, min(i + 3, n))
@@ -144,11 +146,11 @@ class PatternsMixin:
 
         A Fair Value Gap is formed when price moves so fast that a 3-candle
         sequence leaves an untraded zone between candle 1 and candle 3:
-          Bullish FVG: candle3.low > candle1.high — up-move left a support gap.
-          Bearish FVG: candle3.high < candle1.low — down-move left a resistance gap.
+          Bullish FVG: candle3.low > candle1.high  up-move left a support gap.
+          Bearish FVG: candle3.high < candle1.low  down-move left a resistance gap.
 
         An FVG is considered "unfilled" if no subsequent bar has closed inside it.
-        Unfilled FVGs act as magnets — price is statistically likely to revisit
+        Unfilled FVGs act as magnets  price is statistically likely to revisit
         and fill them before continuing its trend.
 
         Args:
@@ -157,10 +159,10 @@ class PatternsMixin:
 
         Returns:
             Dict with any of these keys (only present when an FVG is found):
-              bullish_fvg   – {low, high, mid} of the nearest unfilled bullish gap
-              near_bull_fvg – True when price is within 0.5% above the bullish FVG
-              bearish_fvg   – {low, high, mid} of the nearest unfilled bearish gap
-              near_bear_fvg – True when price is within 1.0% below the bearish FVG
+              bullish_fvg    {low, high, mid} of the nearest unfilled bullish gap
+              near_bull_fvg  True when price is within 0.5% above the bullish FVG
+              bearish_fvg    {low, high, mid} of the nearest unfilled bearish gap
+              near_bear_fvg  True when price is within 1.0% below the bearish FVG
             Empty dict if no qualifying FVGs are found.
         """
         try:
@@ -221,13 +223,13 @@ class PatternsMixin:
         Distributes each bar's volume uniformly across its [low, high] price range
         into n_buckets equally-spaced bins, then identifies:
 
-          POC (Point of Control) — bin where most volume traded today. Price
+          POC (Point of Control)  bin where most volume traded today. Price
             gravitates toward POC between trends (mean-reversion magnet).
-          Value Area (VA) — tightest cluster of bins containing 70% of volume.
+          Value Area (VA)  tightest cluster of bins containing 70% of volume.
             Inside VA: price auctions back and forth (chop zone).
             Above VAH: bullish expansion out of balance.
             Below VAL: bearish rejection from the volume cluster.
-          LVN (Low-Volume Node) — bins with < 25% of average volume. These are
+          LVN (Low-Volume Node)  bins with < 25% of average volume. These are
             "free air" zones where price moves fast with little friction.
 
         Uses today's session only for the most relevant intraday context.
@@ -239,14 +241,14 @@ class PatternsMixin:
 
         Returns:
             Dict with keys:
-              poc              – Point of Control price (bin midpoint)
-              vah              – Value Area High (top boundary of 70% VA)
-              val              – Value Area Low (bottom boundary of 70% VA)
-              near_poc         – True when price is within 0.3% of POC
-              in_value_area    – True when val ≤ price ≤ vah
-              above_value_area – True when price > vah (bullish expansion zone)
-              below_value_area – True when price < val (rejected from volume support)
-              lvn_above        – nearest LVN price above current price, or None
+              poc               Point of Control price (bin midpoint)
+              vah               Value Area High (top boundary of 70% VA)
+              val               Value Area Low (bottom boundary of 70% VA)
+              near_poc          True when price is within 0.3% of POC
+              in_value_area     True when val = price = vah
+              above_value_area  True when price > vah (bullish expansion zone)
+              below_value_area  True when price < val (rejected from volume support)
+              lvn_above         nearest LVN price above current price, or None
             Empty dict if data is insufficient or the price range is too narrow.
         """
         try:
@@ -291,11 +293,11 @@ class PatternsMixin:
             if total_vol <= 0:
                 return {}
 
-            # ── POC ──────────────────────────────────────────────────────────────
+            # -- POC --------------------------------------------------------------
             poc_idx   = int(np.argmax(vol_profile))
             poc_price = round(p_min + (poc_idx + 0.5) * bucket_size, 2)
 
-            # ── Value Area (expand from POC until 70% of volume is enclosed) ─────
+            # -- Value Area (expand from POC until 70% of volume is enclosed) -----
             target   = total_vol * 0.70
             lo_b, hi_b = poc_idx, poc_idx
             va_vol   = vol_profile[poc_idx]
@@ -314,7 +316,7 @@ class PatternsMixin:
             vah = round(p_min + (hi_b + 1) * bucket_size, 2)
             val = round(p_min + lo_b       * bucket_size, 2)
 
-            # ── LVNs (bins below 25% of average — free air zones) ────────────────
+            # -- LVNs (bins below 25% of average  free air zones) ----------------
             filled      = vol_profile[vol_profile > 0]
             avg_vol     = float(filled.mean()) if filled.size > 0 else 0.0
             lvn_thresh  = avg_vol * 0.25
@@ -346,10 +348,10 @@ class PatternsMixin:
         Identify key horizontal price levels that institutions watch and trade from.
 
         Aggregates levels from three independent sources without any extra API calls:
-          1. Daily bars  — prev day H/L/C, 5-day (weekly) high/low.
-          2. Pre-market  — today's high/low between 4:00–9:29 AM ET (most-watched
+          1. Daily bars   prev day H/L/C, 5-day (weekly) high/low.
+          2. Pre-market   today's high/low between 4:009:29 AM ET (most-watched
                            single reference by professional intraday traders).
-          3. 60-min swings — resampled from the already-fetched 5-min bars;
+          3. 60-min swings  resampled from the already-fetched 5-min bars;
                              pivot highs/lows confirmed by 2 bars on each side.
 
         All levels are merged, de-duplicated within 0.1% of each other, and split
@@ -364,10 +366,10 @@ class PatternsMixin:
               prev_day_high / prev_day_low / prev_day_close
               week_high / week_low
               premarket_high / premarket_low
-              resistance_levels  – sorted ascending list above price (up to 5)
-              support_levels     – sorted descending list below price (up to 5)
-              nearest_resistance – closest resistance above price (primary TP target)
-              nearest_support    – closest support below price (entry confirmation zone)
+              resistance_levels   sorted ascending list above price (up to 5)
+              support_levels      sorted descending list below price (up to 5)
+              nearest_resistance  closest resistance above price (primary TP target)
+              nearest_support     closest support below price (entry confirmation zone)
             Empty dict if df_5m is None, empty, or has fewer than 20 rows.
         """
         result: dict = {}
@@ -377,7 +379,7 @@ class PatternsMixin:
         try:
             price = float(df_5m["close"].iloc[-1])
 
-            # ── Daily levels ──────────────────────────────────────────────────────
+            # -- Daily levels ------------------------------------------------------
             if df_day is not None and len(df_day) >= 2:
                 yd = df_day.iloc[-2]
                 result["prev_day_high"]  = round(float(yd["high"]),  2)
@@ -388,7 +390,7 @@ class PatternsMixin:
                 result["week_high"] = round(float(w["high"].max()), 2)
                 result["week_low"]  = round(float(w["low"].min()),  2)
 
-            # ── Pre-market high/low (4:00–9:29 AM ET today) ───────────────────────
+            # -- Pre-market high/low (4:009:29 AM ET today) -----------------------
             try:
                 dti      = pd.DatetimeIndex(df_5m.index)
                 idx_et   = dti.tz_convert(config.ET) if dti.tz else dti.tz_localize("UTC").tz_convert(config.ET)
@@ -406,7 +408,7 @@ class PatternsMixin:
             except Exception:
                 pass
 
-            # ── 60-min swing highs/lows (resampled — no extra API call) ──────────
+            # -- 60-min swing highs/lows (resampled  no extra API call) ----------
             df_60 = df_5m.resample("60min").agg({
                 "open":   "first",
                 "high":   "max",
@@ -428,7 +430,7 @@ class PatternsMixin:
                             lows[i] < lows[i-2] and lows[i] < lows[i+2]):
                         swing_lows.append(round(float(lows[i]), 2))
 
-            # ── Merge and classify levels; filter within 0.1% of current price ───
+            # -- Merge and classify levels; filter within 0.1% of current price ---
             TOL = 0.001
             all_res = [v for v in [
                 result.get("prev_day_high"),
@@ -459,4 +461,3 @@ class PatternsMixin:
             pass
 
         return result
-

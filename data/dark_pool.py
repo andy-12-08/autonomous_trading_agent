@@ -1,5 +1,5 @@
 """
-FINRA REGSHO daily short-sale volume — dark pool proxy.
+FINRA REGSHO daily short-sale volume  dark pool proxy.
 
 FINRA legally requires all member firms to report short-sale volume daily.
 The CNMS file aggregates this across all venues (NYSE TRF, NASDAQ TRF, OTC).
@@ -10,7 +10,7 @@ Why short volume predicts direction (counter-intuitive but empirically solid):
     liquidity, then closes out intraday. Net effect = bullish accumulation signal.
   LOW short_vol_pct (<35%)  = retail-driven buying with no institutional backstop,
     or quiet distribution by institutions into retail demand.
-  NEUTRAL (35–55%)          = no directional information.
+  NEUTRAL (3555%)          = no directional information.
 
 This is the same signal Squeeze Metrics commercializes as "DIX" (Dark Index).
 The underlying data is free, public, and updated daily by 6 PM ET.
@@ -33,17 +33,17 @@ class DarkPoolClient:
     today's file first, then falls back up to 4 trading days to handle
     weekends and publication delays.
 
-    IMPORTANT: the base directory URL returns 403 — only the full filename URL
+    IMPORTANT: the base directory URL returns 403  only the full filename URL
     works. e.g. https://cdn.finra.org/equity/regsho/daily/CNMSshvol20260430.txt
     """
 
-    # IMPORTANT: the base directory URL returns 403 — only the full filename URL works.
+    # IMPORTANT: the base directory URL returns 403  only the full filename URL works.
     _FINRA_CDN    = "https://cdn.finra.org/equity/regsho/daily"
     _FETCH_RETRIES = 3
 
     # Signal thresholds (from empirical analysis of DIX behaviour)
-    ACCUMULATION_THRESHOLD = 0.55   # short% >= 55% → MM shorting to fill institutional buys
-    DISTRIBUTION_THRESHOLD = 0.35   # short% <= 35% → retail-led or institutional selling
+    ACCUMULATION_THRESHOLD = 0.55   # short% >= 55% ? MM shorting to fill institutional buys
+    DISTRIBUTION_THRESHOLD = 0.35   # short% <= 35% ? retail-led or institutional selling
 
     def __init__(self) -> None:
         """Initialize the dark pool client with an empty cache."""
@@ -65,7 +65,7 @@ class DarkPoolClient:
     def _fetch_finra_file(self, trading_date: date) -> dict[str, dict] | None:
         """Download and parse the FINRA CNMS short-sale file for a given date.
 
-        The CDN hosts individual dated files — the base directory URL returns 403
+        The CDN hosts individual dated files  the base directory URL returns 403
         (directory listing disabled). Only the full filename URL works:
           GOOD: cdn.finra.org/equity/regsho/daily/CNMSshvol20260430.txt
           BAD:  cdn.finra.org/equity/regsho/daily  (403 Forbidden)
@@ -142,7 +142,7 @@ class DarkPoolClient:
         """Return today's full dark pool dataset {symbol: data}.
 
         Tries today's file first; falls back to the previous trading day if not
-        yet published. Result is cached for the session — only one HTTP download
+        yet published. Result is cached for the session  only one HTTP download
         per day.
 
         Args:
@@ -167,7 +167,7 @@ class DarkPoolClient:
                 self._cache_date = today
                 return self._cache
 
-        log.warning("Dark pool: no FINRA file found in last 4 trading days — running without")
+        log.warning("Dark pool: no FINRA file found in last 4 trading days  running without")
         return {}
 
     def get_dark_pool_signals(self, symbols: list[str]) -> dict[str, dict]:
@@ -214,4 +214,4 @@ class DarkPoolClient:
         if distr:
             parts.append("distribution: " + ", ".join(
                 f"{s}({d['short_vol_pct']:.0%})" for s, d in distr))
-        return "dark pool — " + " | ".join(parts) if parts else "dark pool: all neutral"
+        return "dark pool  " + " | ".join(parts) if parts else "dark pool: all neutral"

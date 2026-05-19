@@ -125,7 +125,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         """
         self._force_run = flag
         if flag:
-            log.info("=== FORCE MODE: market-hours gates bypassed — pipeline will run immediately ===")
+            log.info("=== FORCE MODE: market-hours gates bypassed  pipeline will run immediately ===")
 
     def set_dry_run(self, flag: bool):
         """Enable or disable dry-run mode (no broker orders).
@@ -181,13 +181,13 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             config.MAX_RISK_PER_TRADE   = round(equity * config.MAX_RISK_PER_TRADE_HARD_PCT, 2)
             config.DAILY_DRAWDOWN_LIMIT = round(equity * config.DAILY_DRAWDOWN_LIMIT_PCT, 2)
             log.info(
-                "Daily caps refreshed — equity=$%.0f | daily_cap=$%.0f | "
+                "Daily caps refreshed  equity=$%.0f | daily_cap=$%.0f | "
                 "max_risk=$%.0f | drawdown_limit=$%.0f",
                 equity, config.MAX_DAILY_CAPITAL,
                 config.MAX_RISK_PER_TRADE, config.DAILY_DRAWDOWN_LIMIT,
             )
         except Exception as exc:
-            log.warning("Could not refresh daily caps from live equity: %s — using config defaults", exc)
+            log.warning("Could not refresh daily caps from live equity: %s  using config defaults", exc)
 
     def _restore_daily_state_from_db(self) -> None:
         """Rebuild today's P&L, trade count, and deployed capital from the decisions DB.
@@ -262,7 +262,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         """
         if self._dry_run:
             positions = self.broker.get_positions()
-            log.info("[DRY-RUN] EOD: would close %d position(s) — no real orders placed", len(positions))
+            log.info("[DRY-RUN] EOD: would close %d position(s)  no real orders placed", len(positions))
             for sym in positions:
                 log.info("  [DRY-RUN] Would close %s", sym)
             return
@@ -272,12 +272,12 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         for symbol, pos in positions.items():
             gfv_safe, reason = self.gfv_tracker.gfv_safe_to_sell(symbol)
             if not gfv_safe:
-                log.warning("EOD: GFV block on %s — %s. Closing anyway (EOD mandatory).", symbol, reason)
+                log.warning("EOD: GFV block on %s  %s. Closing anyway (EOD mandatory).", symbol, reason)
             pnl           = float(getattr(pos, "unrealized_pl",  0) or 0)
             current_price = float(getattr(pos, "current_price",  0) or 0)
             qty           = float(getattr(pos, "qty",            0) or 0)
             if not self.broker.close_position(symbol):
-                log.error("EOD: broker rejected close for %s — position left open, skipping DB cleanup",
+                log.error("EOD: broker rejected close for %s  position left open, skipping DB cleanup",
                           symbol)
                 any_failed = True
                 continue
@@ -286,11 +286,11 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             with self._state_lock:
                 self._daily_pnl += pnl
             self.database.record_decision(symbol, "SELL", price=current_price, qty=qty,
-                            pnl=pnl, reasoning="EOD forced close — no overnight holds")
+                            pnl=pnl, reasoning="EOD forced close  no overnight holds")
             self.database.update_outcome(symbol, "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven", pnl)
             log.info("EOD closed %s | qty=%.0f price=%.2f pnl=%+.2f", symbol, qty, current_price, pnl)
         if any_failed:
-            log.warning("EOD: one or more positions failed to close — skipping cancel_all_orders "
+            log.warning("EOD: one or more positions failed to close  skipping cancel_all_orders "
                         "to preserve bracket stops on still-open positions")
         else:
             self.broker.cancel_all_orders()
@@ -321,7 +321,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         if exp_data:
             plan_note += f" | {exp_str}"
             if not exp_data["is_positive"]:
-                log.warning("⚠ NEGATIVE EXPECTANCY: %.2f — review strategy before next session",
+                log.warning("? NEGATIVE EXPECTANCY: %.2f  review strategy before next session",
                             exp_data["expectancy"])
 
         self.database.upsert_daily_summary(today, trades, wins, losses, gross, gross, notes=plan_note)
@@ -337,7 +337,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
     def run_scan_and_trade(self):
         """Run _scan_body in a daemon thread with a wall-clock join timeout.
 
-        The scan lock is held for the entire lifetime of the worker thread — if the
+        The scan lock is held for the entire lifetime of the worker thread  if the
         thread hangs past the timeout, this method blocks until it finishes before
         releasing the lock. This prevents a second scan from starting while the first
         is still mutating shared state.
@@ -346,7 +346,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             None.
         """
         if not self._scan_lock.acquire(blocking=False):
-            log.warning("Previous scan still running — skipping this 5-min tick")
+            log.warning("Previous scan still running  skipping this 5-min tick")
             return
         try:
             my_gen = self._scan_generation
@@ -357,7 +357,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             t.join(timeout=self._SCAN_TIMEOUT_SECONDS)
             if t.is_alive():
                 log.error(
-                    "SCAN TIMEOUT after %ds — scan thread is stuck (hung API call?). "
+                    "SCAN TIMEOUT after %ds  scan thread is stuck (hung API call?). "
                     "Waiting up to 120s for clean exit before releasing lock.",
                     self._SCAN_TIMEOUT_SECONDS,
                 )
@@ -365,7 +365,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
                 if t.is_alive():
                     self._scan_generation += 1  # invalidate the abandoned thread
                     log.error(
-                        "Scan thread still alive after grace period — releasing lock. "
+                        "Scan thread still alive after grace period  releasing lock. "
                         "Abandoned thread (gen %d) will not execute decisions.",
                         my_gen,
                     )
