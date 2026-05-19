@@ -16,40 +16,46 @@ ALPACA_BASE_URL = os.getenv("ALPACA_ENDPOINT", "https://paper-api.alpaca.markets
 
 
 # Account
-ACCOUNT_SIZE = 10_000.0
+ACCOUNT_SIZE = 25_000.0
 
-# T+1 settlement cash account: practical daily buy cap = $4,000
-# (keeps $6K as settled buffer; yesterday's sales settle by market open)
-MAX_DAILY_CAPITAL  = 4_000.0
-SETTLEMENT_DAYS    = 1         # T+1: proceeds settle next business day
+# Margin account — intraday proceeds available immediately (no T+1 settlement wait).
+# Daily buy cap and risk ceiling are recomputed each morning from live equity
+# (see reset_daily_state) so they scale automatically as the account grows or shrinks.
+MAX_DAILY_CAPITAL_PCT  = 0.80   # daily buy cap  = 80% of equity
+MAX_RISK_PER_TRADE_HARD_PCT = 0.015  # hard risk ceiling = 1.5% of equity per trade
+
+# Seed values — overwritten at session reset with live equity; used only as fallback
+# if the broker API is unavailable at startup.
+MAX_DAILY_CAPITAL  = round(ACCOUNT_SIZE * MAX_DAILY_CAPITAL_PCT, -2)   # $20,000
 
 # Risk per trade
-# Target 0.75% of equity ($75); hard ceiling 1% ($100)
+# Target 0.75% of equity (risk-size); hard ceiling = MAX_RISK_PER_TRADE_HARD_PCT of equity.
 MAX_RISK_PER_TRADE_PCT = 0.0075
-MAX_RISK_PER_TRADE     = 100.0      # hard ceiling $100
+MAX_RISK_PER_TRADE     = round(ACCOUNT_SIZE * MAX_RISK_PER_TRADE_HARD_PCT, 2)  # $375
 
 # Daily drawdown guard
 DAILY_DRAWDOWN_LIMIT_PCT = 0.02                              # 2% of equity
-DAILY_DRAWDOWN_LIMIT     = ACCOUNT_SIZE * DAILY_DRAWDOWN_LIMIT_PCT  # $200
+DAILY_DRAWDOWN_LIMIT     = ACCOUNT_SIZE * DAILY_DRAWDOWN_LIMIT_PCT  # $500 seed
 
 # Exposure cap
-MAX_TOTAL_EXPOSURE_PCT = 0.40       # hard ceiling 40% of equity = $4,000 (matches daily buy cap)
-MIN_TOTAL_EXPOSURE_PCT = 0.15       # aim to deploy at least 15% when conditions allow
+MAX_TOTAL_EXPOSURE_PCT = 0.80       # hard ceiling 80% of equity — margin gives the headroom
+MIN_TOTAL_EXPOSURE_PCT = 0.30       # deploy at least 30% when conditions allow
 
 # Position limits
-MAX_CONCURRENT_POSITIONS = 4           # max 4 stocks simultaneously
-MAX_POSITION_SIZE        = MAX_DAILY_CAPITAL  # hard ceiling = full daily cap; conviction tiers govern actual sizing
+MAX_CONCURRENT_POSITIONS = 8           # 8 simultaneous positions across 8 sector buckets
+MAX_POSITION_SIZE        = MAX_DAILY_CAPITAL  # updated alongside MAX_DAILY_CAPITAL each morning
 MIN_POSITION_SIZE        = 0.0         # no minimum position size
-MAX_TRADES_PER_DAY       = 10          # Rule 16: quality over quantity
+MAX_TRADES_PER_DAY       = 20          # PDT unlocked at $25k — quality gate does real filtering
 
 # Conviction-weighted position sizing.
 # Each entry is (min_signal_score, fraction_of_MAX_DAILY_CAPITAL).
 # Tiers are evaluated in order; first match wins.
 # Actual cap = min(intended, remaining daily capital) — never exceeds what's left.
+# Max 15% of equity per trade keeps concentration risk manageable across 8 positions.
 CONVICTION_TIERS = [
-    (8.5, 0.60),   # high-conviction  (≥8.5): up to 60% of daily capital (~$2,400)
-    (7.5, 0.50),   # strong           (≥7.5): up to 50%                   (~$2,000)
-    (0.0, 0.30),   # below 7.5:               up to 30%                   (~$1,200)
+    (8.5, 0.18),   # high-conviction  (≥8.5): up to 18% of daily capital (~$3,600)
+    (7.5, 0.14),   # strong           (≥7.5): up to 14%                   (~$2,800)
+    (0.0, 0.09),   # below 7.5:               up to  9%                   (~$1,800)
 ]
 
 # High-conviction threshold: allows a second position in the same sector bucket
@@ -275,14 +281,17 @@ CIRCUIT_BREAKER_UVXY_SURGE_PCT =  5.0   # UVXY up ≥ 5% intraday → stand asid
 EARNINGS_BLACKOUT_DAYS = 2        # skip stocks reporting within 2 calendar days
 
 # Time stop
-TIME_STOP_MINUTES      = 45       # max time to wait for thesis to materialise
-TIME_STOP_PROGRESS_PCT = 0.25     # must reach 25% of take-profit range by deadline
+# After TIME_STOP_MINUTES the position must be up at least TIME_STOP_MIN_GAIN_PCT
+# from entry, otherwise it is exited.  The old progress-toward-TP metric was broken
+# because BRACKET_TP_SAFETY=3.0 makes the TP unreachable intraday.
+TIME_STOP_MINUTES      = 60       # max time to wait for thesis to materialise
+TIME_STOP_MIN_GAIN_PCT = 0.0      # exit if position is in the red (pnl < 0) at deadline
 
 # Partial profit (scale-out)
 PARTIAL_PROFIT_TRIGGER_PCT = 0.50  # sell 50% of shares when price hits 50% of TP range
 
 # Correlation guard
-MAX_HOLDING_CORRELATION    = 0.80  # block new position if 10-day return corr > this
+MAX_HOLDING_CORRELATION    = 0.70  # block new position if 10-day return corr > this (tightened for 8-position portfolio)
 
 # Gap-and-go setup
 # First 90-min institutional play: gap from prior close + volume + holding above open

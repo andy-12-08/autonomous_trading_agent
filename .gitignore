@@ -26,6 +26,8 @@ build/
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
 dynamic_watchlist.json
 
 # Logs

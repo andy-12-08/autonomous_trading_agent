@@ -314,7 +314,7 @@ class Notifier:
                 if attempt:
                     time.sleep(2 ** attempt)  # 2s, 4s
                 try:
-                    with smtplib.SMTP_SSL(self.config.SMTP_HOST, 465, timeout=30) as server:
+                    with smtplib.SMTP_SSL(self.config.SMTP_HOST, 465, timeout=10) as server:
                         server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
                         server.send_message(msg)
                     log.info("Trade alert sent → %s  [%s %s @ $%.2f]",
@@ -322,7 +322,7 @@ class Notifier:
                     return
                 except Exception:
                     try:
-                        with smtplib.SMTP(self.config.SMTP_HOST, 587, timeout=30) as server:
+                        with smtplib.SMTP(self.config.SMTP_HOST, 587, timeout=10) as server:
                             server.ehlo()
                             server.starttls()
                             server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
@@ -366,7 +366,7 @@ class Notifier:
                     if attempt:
                         time.sleep(2 ** attempt)
                     try:
-                        with smtplib.SMTP_SSL(self.config.SMTP_HOST, 465, timeout=30) as server:
+                        with smtplib.SMTP_SSL(self.config.SMTP_HOST, 465, timeout=10) as server:
                             server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
                             server.send_message(msg)
                         log.info("Daily summary email sent → %s  (P&L $%+.2f)",
@@ -374,7 +374,7 @@ class Notifier:
                         return
                     except Exception:
                         try:
-                            with smtplib.SMTP(self.config.SMTP_HOST, 587, timeout=30) as server:
+                            with smtplib.SMTP(self.config.SMTP_HOST, 587, timeout=10) as server:
                                 server.ehlo()
                                 server.starttls()
                                 server.login(self.config.SMTP_USER, self.config.SMTP_PASS)

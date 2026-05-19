@@ -138,12 +138,14 @@ class OrdersMixin:
             Alpaca order object on success, or None when skipped or failed.
         """
         _STOP_TYPES = {"stop", "stop_limit", "trailing_stop"}
+        sym_up = symbol.upper()
 
-        def _cancel_if_stop(o) -> bool:
+        def _cancel_if_stop(o, inherited_sym: str = "") -> bool:
+            # Bracket child legs may lack their own symbol — inherit from the parent.
+            o_sym  = str(getattr(o, "symbol", "") or inherited_sym).upper()
             o_type = str(getattr(o, "order_type", "") or getattr(o, "type", "") or "").lower()
             o_side = str(getattr(o, "side", "")).lower()
-            o_sym  = str(getattr(o, "symbol", "")).upper()
-            if o_sym != symbol.upper() or "sell" not in o_side or o_type not in _STOP_TYPES:
+            if o_sym != sym_up or "sell" not in o_side or o_type not in _STOP_TYPES:
                 return False
             try:
                 self._trade_client.cancel_order_by_id(str(o.id))
@@ -152,15 +154,26 @@ class OrdersMixin:
                 pass
             return True
 
-        orders = self.get_open_orders()
-        for o in orders:
-            _cancel_if_stop(o)
-            for leg in (getattr(o, "legs", None) or []):
-                _cancel_if_stop(leg)
         positions = self.get_positions()
         if symbol not in positions:
             return
-        qty = float(positions[symbol].qty)
+        pos       = positions[symbol]
+        qty       = float(pos.qty)
+        mkt_price = float(pos.current_price or 0)
+        if mkt_price > 0 and new_stop >= mkt_price:
+            # Refuse to cancel existing stops and replace with an impossible one.
+            # The caller should have caught this; log and bail to keep protection intact.
+            log.warning(
+                "update_stop_loss %s: new stop %.2f >= market price %.2f — aborting "
+                "(existing bracket/stop left in place)",
+                symbol, new_stop, mkt_price)
+            return None
+        orders = self.get_open_orders()
+        for o in orders:
+            _cancel_if_stop(o)
+            parent_sym = str(getattr(o, "symbol", "")).upper()
+            for leg in (getattr(o, "legs", None) or []):
+                _cancel_if_stop(leg, inherited_sym=parent_sym)
         req = StopOrderRequest(
             symbol=symbol,
             qty=qty,

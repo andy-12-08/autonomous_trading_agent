@@ -71,7 +71,7 @@ def main():
     )
     log.info("=" * 60)
 
-    orchestrator, backtester = build_trading_stack(dry_run=args.dry_run)
+    orchestrator, backtester, news_stream = build_trading_stack(dry_run=args.dry_run)
     if args.force:
         orchestrator.set_force_run(True)
 
@@ -128,6 +128,13 @@ def main():
         log.info("Bot stopped by user")
     finally:
         scheduler.shutdown(wait=False)
+        # Close the news WebSocket cleanly so Alpaca releases the connection
+        # server-side before the process exits. Without this, the next startup
+        # sees 'connection limit exceeded' for ~90s while the ghost connection
+        # expires on Alpaca's end.
+        log.info("Closing news stream...")
+        news_stream.stop(timeout=5.0)
+        log.info("News stream closed — exiting")
 
 
 if __name__ == "__main__":

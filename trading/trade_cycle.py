@@ -288,6 +288,19 @@ class TradeCycleMixin:
                         f"15min gate: {bull15}/3 bullish — momentum entries require full 15-min alignment"))
                     continue
 
+            # Sector alignment gate — if the symbol's sector is underperforming
+            # (negative on the day), require a higher-conviction signal to enter.
+            # A lagging sector trades against the macro tailwind; only the strongest
+            # setups are worth fighting that headwind.
+            bucket   = config.SYMBOL_BUCKET.get(sym, "unknown")
+            sec_perf = sector_str.get(bucket, 0.0)
+            score    = float(item.get("signal_score", 0))
+            if sec_perf < 0 and score < 8.5:
+                pre_vetoed.append((sym,
+                    f"sector gate: {bucket} underperforming ({sec_perf:+.1f}%) "
+                    f"— score {score:.1f} below 8.5 threshold for lagging sector"))
+                continue
+
             pre_passed.append(item)
 
         if pre_vetoed:

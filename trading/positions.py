@@ -15,6 +15,24 @@ class PositionsMixin:
         """
         broker_positions = self.broker.get_positions()
         db_positions     = {p["symbol"]: p for p in self.database.get_open_positions_db()}
+
+        # Guard against a transient empty-positions API response.  If the broker
+        # returns zero positions but we have DB records, retry once.  If it is
+        # still empty after the retry, skip bracket-exit processing entirely for
+        # this tick to avoid spuriously removing all open positions.
+        _skip_bracket_exits = False
+        if not broker_positions and db_positions:
+            import time as _time
+            _time.sleep(1.5)
+            broker_positions = self.broker.get_positions()
+            if not broker_positions:
+                log.warning(
+                    "broker returned 0 positions but DB has %d open row(s) — "
+                    "skipping bracket-exit detection this tick (likely transient API hiccup)",
+                    len(db_positions),
+                )
+                _skip_bracket_exits = True
+
         open_orders      = self.broker.get_open_orders()
         snapshot         = []
 
@@ -50,6 +68,15 @@ class PositionsMixin:
                             trailing=True, highest_price=current_price)
                         log.info("Breakeven already protected %s: SL=%.2f ≥ BE=%.2f — arming step-trail",
                                  symbol, stop_loss, breakeven_stop)
+                    elif breakeven_stop >= current_price:
+                        # Price reversed below the breakeven level in the same tick — skip.
+                        log.warning(
+                            "Breakeven %s: stop %.2f >= price %.2f — skipping (price fell back)",
+                            symbol, breakeven_stop, current_price)
+                        trailing = True
+                        self.database.save_position(
+                            symbol, entry_price, qty, stop_loss, take_profit,
+                            trailing=True, highest_price=current_price)
                     else:
                         ok, _ = self.risk_manager.approve_stop_update(symbol, breakeven_stop, stop_loss)
                         if ok:
@@ -77,27 +104,42 @@ class PositionsMixin:
                     new_stop = round(new_stop * (1 + config.TRAIL_STEP_SIZE_PCT), 2)
                     steps   += 1
                 if steps > 0:
-                    ok, _ = self.risk_manager.approve_stop_update(symbol, new_stop, stop_loss)
-                    if ok:
-                        stop_loss = new_stop
-                        self.broker.update_stop_loss(symbol, new_stop)
-                        stop_updated = True
-                        self.database.save_position(
-                            symbol, entry_price, qty, stop_loss, take_profit,
-                            trailing=True, highest_price=current_price)
-                        self.database.record_decision(
-                            symbol, "UPDATE_STOP", current_price, qty,
-                            stop_loss=new_stop,
-                            reasoning=(
-                                f"Step-trail: {steps} step(s) → stop {new_stop:.2f} "
-                                f"(price={current_price:.2f}, "
-                                f"step={config.TRAIL_STEP_SIZE_PCT:.1%})"
-                            ))
+                    if new_stop >= current_price:
+                        # Price fell back through the new stop level between PM cycles —
+                        # don't submit an impossible stop; the bracket or existing stop
+                        # is already at or through the exit price.
+                        log.warning(
+                            "Step-trail %s: new stop %.2f >= price %.2f — skipping update "
+                            "(position may be at stop level, bracket will handle exit)",
+                            symbol, new_stop, current_price)
+                    else:
+                        ok, _ = self.risk_manager.approve_stop_update(symbol, new_stop, stop_loss)
+                        if ok:
+                            stop_loss = new_stop
+                            self.broker.update_stop_loss(symbol, new_stop)
+                            stop_updated = True
+                            self.database.save_position(
+                                symbol, entry_price, qty, stop_loss, take_profit,
+                                trailing=True, highest_price=current_price)
+                            self.database.record_decision(
+                                symbol, "UPDATE_STOP", current_price, qty,
+                                stop_loss=new_stop,
+                                reasoning=(
+                                    f"Step-trail: {steps} step(s) → stop {new_stop:.2f} "
+                                    f"(price={current_price:.2f}, "
+                                    f"step={config.TRAIL_STEP_SIZE_PCT:.1%})"
+                                ))
 
             if not stop_updated and not self.broker.has_active_stop_order(symbol, open_orders):
-                log.warning("No active stop order found for %s — resubmitting SL=%.2f",
-                            symbol, stop_loss)
-                self.broker.update_stop_loss(symbol, stop_loss)
+                if stop_loss >= current_price:
+                    log.warning(
+                        "No stop for %s but SL=%.2f >= price=%.2f — not resubmitting "
+                        "(bracket will handle exit or position is at stop level)",
+                        symbol, stop_loss, current_price)
+                else:
+                    log.warning("No active stop order found for %s — resubmitting SL=%.2f",
+                                symbol, stop_loss)
+                    self.broker.update_stop_loss(symbol, stop_loss)
 
             gfv_locked, gfv_reason = self.gfv_tracker.is_gfv_locked(symbol)
             snapshot.append({
@@ -118,9 +160,10 @@ class PositionsMixin:
                 "setup_type":    db.get("setup_type"),
             })
 
-        for symbol in list(db_positions.keys()):
-            if symbol not in broker_positions:
-                self._capture_bracket_exit(symbol, db_positions[symbol])
+        if not _skip_bracket_exits:
+            for symbol in list(db_positions.keys()):
+                if symbol not in broker_positions:
+                    self._capture_bracket_exit(symbol, db_positions[symbol])
 
         return snapshot
 
@@ -204,19 +247,10 @@ class PositionsMixin:
             if age_minutes < config.TIME_STOP_MINUTES:
                 continue
 
-            entry    = pos["entry_price"]
-            tp       = pos["take_profit"]
-            current  = pos["current_price"]
-            tp_range = tp - entry
-            if tp_range <= 0:
-                continue
-
-            progress = (current - entry) / tp_range
-            if progress < config.TIME_STOP_PROGRESS_PCT:
+            if pos.get("pnl_pct", 0.0) < 0:
                 log.warning(
-                    "TIME STOP: %s open %.0f min, progress=%.0f%% < %.0f%% target — exiting",
-                    pos["symbol"], age_minutes,
-                    progress * 100, config.TIME_STOP_PROGRESS_PCT * 100)
+                    "TIME STOP: %s open %.0f min and in the red (%.2f%%) — exiting",
+                    pos["symbol"], age_minutes, pos.get("pnl_pct", 0.0))
                 to_exit.append(pos["symbol"])
 
         return to_exit
@@ -333,8 +367,7 @@ class PositionsMixin:
             self.database.record_decision(
                 sym, "SELL", pos_data.get("current_price"), qty,
                 pnl=pnl, setup_type=pos_data.get("setup_type"),
-                reasoning=(f"Time stop: position aged > {config.TIME_STOP_MINUTES}min "
-                           f"without reaching {config.TIME_STOP_PROGRESS_PCT:.0%} of target"))
+                reasoning=f"Time stop: position aged >{config.TIME_STOP_MINUTES}min and in the red — exiting")
             self.database.remove_position(sym)
             self.gfv_tracker.remove_buy(sym)
             self.database.update_outcome(
@@ -346,8 +379,7 @@ class PositionsMixin:
                 deployed=self._deployed_today,
                 positions_open=len(positions_snapshot) - 1,
                 pnl=pnl, setup_type="time_stop",
-                reason=f"Time stop: open >{config.TIME_STOP_MINUTES}min "
-                       f"without {config.TIME_STOP_PROGRESS_PCT:.0%} progress")
+                reason=f"Time stop: open >{config.TIME_STOP_MINUTES}min and in the red")
 
     def _execute_partial_profit_exits(self, positions_snapshot: list[dict], equity: float) -> None:
         """Sell half of each eligible position (skips single-share lines) when GFV allows.
@@ -382,17 +414,33 @@ class PositionsMixin:
                 sym, "PARTIAL_SELL", pos_data.get("current_price"), half_qty, pnl=pnl,
                 reasoning=(f"Auto partial profit: reached {config.PARTIAL_PROFIT_TRIGGER_PCT:.0%} "
                            f"of take-profit range — scaling out 50%"))
-            orig_tp   = float(pos_data.get("take_profit", 0))
-            entry     = float(pos_data.get("entry_price", 0))
-            runner_tp = round(entry + (orig_tp - entry) * 1.5, 2) if orig_tp > entry > 0 else orig_tp
+            orig_tp     = float(pos_data.get("take_profit", 0))
+            entry       = float(pos_data.get("entry_price", 0))
+            runner_stop = float(pos_data.get("stop_loss", 0))
+            runner_tp   = round(entry + (orig_tp - entry) * 1.5, 2) if orig_tp > entry > 0 else orig_tp
+            runner_qty  = qty - half_qty
             self.database.save_position(
-                sym, pos_data["entry_price"], qty - half_qty,
-                pos_data["stop_loss"], runner_tp,
+                sym, pos_data["entry_price"], runner_qty,
+                runner_stop, runner_tp,
                 trailing=pos_data.get("trailing", False),
                 highest_price=pos_data.get("current_price"),
                 partial_taken=True, entry_ts=pos_data.get("entry_ts", ""))
             if runner_tp != orig_tp:
                 log.info("Runner TP extended: %s orig=%.2f → runner=%.2f", sym, orig_tp, runner_tp)
+            # Resubmit bracket protection for the remaining runner shares.
+            # The original bracket was cancelled at the start of this method,
+            # so the runner has no stop/TP until we resubmit one here.
+            if runner_qty >= 1 and runner_stop and runner_tp:
+                try:
+                    self.broker.place_bracket_order(sym, int(runner_qty), runner_stop, runner_tp)
+                    log.info("Runner bracket resubmitted %s: qty=%.0f SL=%.2f TP=%.2f",
+                             sym, runner_qty, runner_stop, runner_tp)
+                except Exception as _re:
+                    log.warning("Runner bracket resubmit failed for %s: %s — submitting stop only", sym, _re)
+                    try:
+                        self.broker.update_stop_loss(sym, runner_stop)
+                    except Exception:
+                        pass
             self.notifier.send_trade_alert(
                 action="PARTIAL_SELL", symbol=sym,
                 price=float(pos_data.get("current_price") or 0), qty=half_qty,

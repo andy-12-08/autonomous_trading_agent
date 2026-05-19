@@ -138,13 +138,14 @@ class SignalRulesMixin:
         if not bool(sig.get("vwap_cross_up", False)):
             return 0.0, []
 
-        vol_ratio = float(sig.get("vol_ratio",  1.0))
-        rsi       = float(sig.get("rsi",        50))
-        price     = float(sig.get("price",      0))
-        vwap      = float(sig.get("vwap",       0))
-        ema9      = float(sig.get("ema9",       0))
-        ema21     = float(sig.get("ema21",      0))
-        ema50     = float(sig.get("ema50",      0))
+        vol_ratio      = float(sig.get("vol_ratio",      1.0))
+        prev_vol_ratio = float(sig.get("prev_vol_ratio", 1.0))
+        rsi            = float(sig.get("rsi",            50))
+        price          = float(sig.get("price",          0))
+        vwap           = float(sig.get("vwap",           0))
+        ema9           = float(sig.get("ema9",           0))
+        ema21          = float(sig.get("ema21",          0))
+        ema50          = float(sig.get("ema50",          0))
 
         score = 5.0
         ev    = ["+5.0 VWAP reclaim — price crossed back above VWAP from below"]
@@ -158,6 +159,14 @@ class SignalRulesMixin:
             score += 0.5; ev.append(f"+0.5 above-avg volume {vol_ratio:.1f}x")
         else:
             score -= 0.5; ev.append(f"-0.5 weak volume on reclaim {vol_ratio:.1f}x — low conviction")
+
+        # Volume follow-through: if only the cross bar had high volume but the prior
+        # bar was below average, the spike is a single-candle flush rather than
+        # sustained institutional buying — reduce conviction.
+        if vol_ratio >= 1.8 and prev_vol_ratio < 1.0:
+            score -= 1.0; ev.append(
+                f"-1.0 volume spike on cross bar only (prior bar {prev_vol_ratio:.1f}x) "
+                "— single-candle move, no sustained buying")
 
         # RSI — want recovery, not already extended
         if 42 <= rsi <= 60:

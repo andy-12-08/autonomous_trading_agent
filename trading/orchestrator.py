@@ -164,7 +164,30 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         self.market_guard.reset_intraday_regime()
         self.session_overrides.reset()
         log.info("=== Daily state reset for %s ===", self._session_date)
+        self._refresh_daily_caps()
         self._restore_daily_state_from_db()
+
+    def _refresh_daily_caps(self) -> None:
+        """Recompute MAX_DAILY_CAPITAL, MAX_RISK_PER_TRADE, and DAILY_DRAWDOWN_LIMIT
+        from live account equity so all risk limits scale with the actual balance.
+
+        Falls back to the seed values in config if the broker API is unavailable.
+        """
+        try:
+            acct   = self.broker.get_account()
+            equity = float(getattr(acct, "equity", None) or config.ACCOUNT_SIZE)
+            config.MAX_DAILY_CAPITAL    = round(equity * config.MAX_DAILY_CAPITAL_PCT, -2)
+            config.MAX_POSITION_SIZE    = config.MAX_DAILY_CAPITAL
+            config.MAX_RISK_PER_TRADE   = round(equity * config.MAX_RISK_PER_TRADE_HARD_PCT, 2)
+            config.DAILY_DRAWDOWN_LIMIT = round(equity * config.DAILY_DRAWDOWN_LIMIT_PCT, 2)
+            log.info(
+                "Daily caps refreshed — equity=$%.0f | daily_cap=$%.0f | "
+                "max_risk=$%.0f | drawdown_limit=$%.0f",
+                equity, config.MAX_DAILY_CAPITAL,
+                config.MAX_RISK_PER_TRADE, config.DAILY_DRAWDOWN_LIMIT,
+            )
+        except Exception as exc:
+            log.warning("Could not refresh daily caps from live equity: %s — using config defaults", exc)
 
     def _restore_daily_state_from_db(self) -> None:
         """Rebuild today's P&L, trade count, and deployed capital from the decisions DB.

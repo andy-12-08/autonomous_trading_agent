@@ -62,7 +62,12 @@ class MarketDataMixin:
 
     def get_bars_multi(self, symbols: list[str], timeframe: str = "5Min",
                        days: int = 5) -> dict[str, pd.DataFrame]:
-        """Fetch OHLCV bars for many symbols in one API call (IEX feed).
+        """Fetch OHLCV bars for many symbols via parallel batches (IEX feed).
+
+        Splits the symbol list into batches of _BATCH_SIZE and fetches each in
+        a separate thread.  This keeps individual request sizes small so IEX
+        responds well within the per-batch timeout, and a slow/failed batch
+        only loses its own symbols rather than the entire universe.
 
         Args:
             symbols: Ticker list; empty input returns an empty dict.
@@ -85,41 +90,56 @@ class MarketDataMixin:
         tf    = tf_map.get(timeframe, TimeFrame(5, TimeFrameUnit.Minute))
         end   = datetime.now(config.ET)
         start = end - timedelta(days=days)
-        req   = StockBarsRequest(
-            symbol_or_symbols=symbols,
-            timeframe=tf,
-            start=start,
-            end=end,
-            feed="iex",
-        )
-        _TIMEOUT = 45
-        _pool = _cf.ThreadPoolExecutor(max_workers=1)
-        _fut  = _pool.submit(self._data_client.get_stock_bars, req)
-        try:
-            bars = _fut.result(timeout=_TIMEOUT)
-            _pool.shutdown(wait=False)
-        except _cf.TimeoutError:
-            _pool.shutdown(wait=False)
-            log.warning("get_bars_multi timed out after %ds (%d symbols, %s) — returning empty",
-                        _TIMEOUT, len(symbols), timeframe)
-            return {}
-        except Exception as e:
-            _pool.shutdown(wait=False)
-            log.warning("get_bars_multi failed (%d symbols, %s): %s", len(symbols), timeframe, e)
-            return {}
 
-        df_all = bars.df
+        _BATCH_SIZE    = 25   # symbols per request — keeps IEX response time <15 s
+        _BATCH_TIMEOUT = 30   # per-batch wall-clock limit
+        batches = [symbols[i:i + _BATCH_SIZE] for i in range(0, len(symbols), _BATCH_SIZE)]
+
+        def _fetch_batch(batch: list[str]):
+            req = StockBarsRequest(
+                symbol_or_symbols=batch,
+                timeframe=tf,
+                start=start,
+                end=end,
+                feed="iex",
+            )
+            return self._data_client.get_stock_bars(req), batch
+
         result: dict[str, pd.DataFrame] = {}
-        if isinstance(df_all.index, pd.MultiIndex):
-            for sym in symbols:
+        timed_out = 0
+        failed    = 0
+
+        with _cf.ThreadPoolExecutor(max_workers=len(batches)) as pool:
+            futures = {pool.submit(_fetch_batch, b): b for b in batches}
+            for fut, batch in futures.items():
                 try:
-                    df_sym = df_all.xs(sym, level=0).sort_index()
-                    if not df_sym.empty:
-                        result[sym] = df_sym
-                except KeyError:
-                    pass
-        elif not df_all.empty and len(symbols) == 1:
-            result[symbols[0]] = df_all.sort_index()
+                    bars, batch = fut.result(timeout=_BATCH_TIMEOUT)
+                    df_all = bars.df
+                    if isinstance(df_all.index, pd.MultiIndex):
+                        for sym in batch:
+                            try:
+                                df_sym = df_all.xs(sym, level=0).sort_index()
+                                if not df_sym.empty:
+                                    result[sym] = df_sym
+                            except KeyError:
+                                pass
+                    elif not df_all.empty and len(batch) == 1:
+                        result[batch[0]] = df_all.sort_index()
+                except _cf.TimeoutError:
+                    timed_out += 1
+                    log.warning("get_bars_multi batch timed out (%d symbols, %s) — skipping",
+                                len(batch), timeframe)
+                except Exception as e:
+                    failed += 1
+                    log.warning("get_bars_multi batch failed (%d symbols, %s): %s",
+                                len(batch), timeframe, e)
+
+        total = len(batches)
+        if timed_out or failed:
+            log.warning("get_bars_multi: %d/%d batches timed out, %d/%d failed — got %d/%d symbols",
+                        timed_out, total, failed, total, len(result), len(symbols))
+        if not result:
+            log.warning("get_bars_multi: all %d batches failed (%s) — returning empty", total, timeframe)
         return result
 
     def get_latest_price(self, symbol: str) -> float | None:
@@ -424,9 +444,14 @@ class MarketDataMixin:
         # bracket leg fills that don't surface in the top-level orders list.
         # Use `after` (ISO timestamp) instead of `date` so overnight fills are
         # included regardless of which calendar day they executed on.
+        # Strip any /v2 suffix from the base URL — if ALPACA_ENDPOINT already
+        # ends with /v2 the concatenated path would be /v2/v2/… (404).
+        _api_root = config.ALPACA_BASE_URL.rstrip("/")
+        if _api_root.endswith("/v2"):
+            _api_root = _api_root[:-3]
         try:
             resp = _requests.get(
-                f"{config.ALPACA_BASE_URL}/v2/account/activities/FILL",
+                f"{_api_root}/v2/account/activities/FILL",
                 headers={
                     "APCA-API-KEY-ID":     config.ALPACA_KEY    or "",
                     "APCA-API-SECRET-KEY": config.ALPACA_SECRET or "",

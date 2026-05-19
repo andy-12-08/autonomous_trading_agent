@@ -67,6 +67,10 @@ class AlpacaBroker(OrdersMixin, MarketDataMixin):
     def has_active_stop_order(self, symbol: str, open_orders: list) -> bool:
         """Return True if a stop-type sell order (not a take-profit limit) exists for symbol.
 
+        Bracket child legs often have no symbol attribute of their own — the symbol
+        lives only on the parent order.  We therefore accept a leg as matching when
+        the parent's symbol matches, even if the leg's own symbol field is empty.
+
         Args:
             symbol: Equity ticker to inspect.
             open_orders: Iterable returned by get_open_orders.
@@ -75,18 +79,20 @@ class AlpacaBroker(OrdersMixin, MarketDataMixin):
             True when a stop or stop_limit sell is open; False when only a TP limit exists.
         """
         _STOP_TYPES = {"stop", "stop_limit", "trailing_stop"}
+        sym_up = symbol.upper()
 
-        def _is_stop_sell(o) -> bool:
-            sym    = str(getattr(o, "symbol", "")).upper()
+        def _is_stop_sell(o, inherited_sym: str = "") -> bool:
+            o_sym  = str(getattr(o, "symbol", "") or inherited_sym).upper()
             side   = str(getattr(o, "side",   "")).lower()
             o_type = str(getattr(o, "order_type", "") or getattr(o, "type", "") or "").lower()
-            return sym == symbol.upper() and "sell" in side and o_type in _STOP_TYPES
+            return o_sym == sym_up and "sell" in side and o_type in _STOP_TYPES
 
         for o in open_orders:
             if _is_stop_sell(o):
                 return True
+            parent_sym = str(getattr(o, "symbol", "")).upper()
             for leg in (getattr(o, "legs", None) or []):
-                if _is_stop_sell(leg):
+                if _is_stop_sell(leg, inherited_sym=parent_sym):
                     return True
         return False
 

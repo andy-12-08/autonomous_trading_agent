@@ -347,5 +347,8 @@ class IndicatorEngine(PatternsMixin):
             "above_orb_30":     bool(price > orb_30_high) if (orb_30_valid and orb_30_high > 0) else False,
             # ── VWAP reclaim ──────────────────────────────────────────────────────
             # True when price crossed back above VWAP this bar after being below it.
-            "vwap_cross_up": bool(last.get("vwap_cross_up", False)),
+            "vwap_cross_up":   bool(last.get("vwap_cross_up", False)),
+            # Volume on the bar BEFORE the current one — used to detect single-candle
+            # volume spikes vs sustained buying pressure on VWAP reclaim setups.
+            "prev_vol_ratio":  round(float(prev.get("vol_ratio", 1.0)), 2),
         }

@@ -307,21 +307,6 @@ class RiskManager:
         return stop, atr_tp
 
     @staticmethod
-    def should_move_to_breakeven(current_price: float, entry_price: float) -> bool:
-        """Return True when the gain is large enough to move the stop to breakeven."""
-        return (current_price - entry_price) / entry_price >= config.BREAKEVEN_TRIGGER_PCT
-
-    @staticmethod
-    def should_trail(current_price: float, entry_price: float) -> bool:
-        """Return True when the gain is large enough to activate a trailing stop."""
-        return (current_price - entry_price) / entry_price >= config.TRAILING_STOP_TRIGGER_PCT
-
-    @staticmethod
-    def new_trailing_stop(current_price: float) -> float:
-        """Compute the trailing stop price as current_price × (1 − TRAILING_STOP_DISTANCE_PCT)."""
-        return round(current_price * (1 - config.TRAILING_STOP_DISTANCE_PCT), 2)
-
-    @staticmethod
     def is_too_volatile(atr: float, price: float) -> bool:
         """Return True when ATR/price exceeds the absolute volatility ceiling.
 

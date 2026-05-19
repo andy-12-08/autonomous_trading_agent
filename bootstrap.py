@@ -27,7 +27,7 @@ from trading.session_overrides import SessionOverrides
 from utils.backtester import Backtester
 
 
-def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Backtester]:
+def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Backtester, NewsStream]:
     """Construct broker, data clients, risk engines, orchestrator, and weekly backtester.
 
     Starts the optional real-time news stream and attaches it to the broker. Calls
@@ -37,7 +37,10 @@ def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Bac
         dry_run: When True, the orchestrator logs decisions but does not place orders.
 
     Returns:
-        A tuple of the configured TradingOrchestrator and Backtester instances.
+        A tuple of (TradingOrchestrator, Backtester, NewsStream). The caller must
+        call news_stream.stop() on shutdown so the WebSocket is closed cleanly
+        before the process exits — this prevents 'connection limit exceeded' on
+        the next startup.
     """
     db = Database(config.DB_PATH)
     db.init_db()
@@ -105,4 +108,4 @@ def build_trading_stack(dry_run: bool = False) -> tuple[TradingOrchestrator, Bac
     if dry_run:
         orchestrator.set_dry_run(True)
 
-    return orchestrator, backtester
+    return orchestrator, backtester, news_stream
