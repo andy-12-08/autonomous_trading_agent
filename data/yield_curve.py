@@ -14,10 +14,10 @@ Two inputs:
        HYG underperforming LQD = credit stress emerging (risk-off signal)
 
 Risk signal and size multiplier:
-  "risk_on"  ? 1.00  (normal sizing)
-  "normal"   ? 1.00
-  "cautious" ? 0.85  (trim size 15%)
-  "risk_off" ? 0.75  (trim size 25%)
+  "risk_on"  -> 1.00  (normal sizing)
+  "normal"   -> 1.00
+  "cautious" -> 0.85  (trim size 15%)
+  "risk_off" -> 0.75  (trim size 25%)
 
 Cache: 1 hour (intraday bond/yield data changes slowly; one refresh per hour is enough).
 """
@@ -40,10 +40,10 @@ class YieldCurveClient:
     _CACHE_TTL_SECONDS = 3600    # 1 hour
 
     # Yield spread thresholds
-    SPREAD_RISK_OFF   = 0.0    # 10Y-3M < 0.0  ? inverted
-    SPREAD_CAUTIOUS   = 1.0    # 10Y-3M < 1.0  ? flattening
+    SPREAD_RISK_OFF   = 0.0    # 10Y-3M < 0.0 means inverted
+    SPREAD_CAUTIOUS   = 1.0    # 10Y-3M < 1.0 means flattening
     # Credit stress: HYG underperforms LQD by this much intraday
-    CREDIT_STRESS_PCT = -0.30  # HYG change - LQD change < -0.30% ? stress signal
+    CREDIT_STRESS_PCT = -0.30  # HYG change - LQD change < -0.30% means stress
 
     def __init__(self) -> None:
         """Initialize the yield curve client with an empty cache."""
@@ -116,6 +116,14 @@ class YieldCurveClient:
             multi = isinstance(tickers.columns, pd.MultiIndex)
 
             def _series(sym: str) -> "pd.Series | None":
+                """Return non-null close series for a downloaded symbol.
+
+                Args:
+                    sym: Yahoo Finance ticker in the combined response.
+
+                Returns:
+                    Close-price series, or None when unavailable.
+                """
                 try:
                     if multi:
                         df = tickers[sym]  # type: ignore[index]
@@ -127,10 +135,26 @@ class YieldCurveClient:
                     return None
 
             def get_close(sym: str) -> float | None:
+                """Return the latest close for a symbol.
+
+                Args:
+                    sym: Yahoo Finance ticker.
+
+                Returns:
+                    Latest close, or None when missing.
+                """
                 s = _series(sym)
                 return float(s.iloc[-1]) if s is not None else None  # type: ignore[union-attr]
 
             def get_prev_close(sym: str) -> float | None:
+                """Return the prior close for a symbol.
+
+                Args:
+                    sym: Yahoo Finance ticker.
+
+                Returns:
+                    Prior close, or None when fewer than two closes exist.
+                """
                 s = _series(sym)
                 return float(s.iloc[-2]) if s is not None and len(s) >= 2 else None  # type: ignore[union-attr]
 
@@ -162,7 +186,7 @@ class YieldCurveClient:
                 signal = "normal"
                 mult   = 1.0
 
-            # Credit stress can escalate cautious ? risk_off
+            # Credit stress can escalate cautious to risk_off.
             if credit_delta is not None and credit_delta < self.CREDIT_STRESS_PCT:
                 if signal == "normal":
                     signal = "cautious"

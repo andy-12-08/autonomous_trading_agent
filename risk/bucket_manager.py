@@ -141,10 +141,17 @@ class BucketManager:
         strength  = sector_strength or {}
 
         def sort_key(item):
+            """Rank watchlist rows by bucket availability and relative strength.
+
+            Args:
+                item: Watchlist row containing at least a symbol key.
+
+            Returns:
+                Sort tuple where lower values have higher rotation priority.
+            """
             bkt = BucketManager.symbol_to_bucket(item["symbol"])
             already_open = bkt in open_bkts            # primary penalty: already holding
             traded_today = bkt in traded_buckets_today  # secondary penalty: rotated today
-            # Tertiary: negative strength = leading sector ? lower sort key ? comes first
             rel_strength = -strength.get(bkt, 0.0)
             return (int(already_open), int(traded_today), rel_strength)
 

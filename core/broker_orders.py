@@ -141,7 +141,15 @@ class OrdersMixin:
         sym_up = symbol.upper()
 
         def _cancel_if_stop(o, inherited_sym: str = "") -> bool:
-            # Bracket child legs may lack their own symbol  inherit from the parent.
+            """Cancel a matching open stop leg.
+
+            Args:
+                o: Alpaca order or bracket child leg to inspect.
+                inherited_sym: Parent symbol for bracket legs without a symbol.
+
+            Returns:
+                True when the order matched the target stop and was handled.
+            """
             o_sym  = str(getattr(o, "symbol", "") or inherited_sym).upper()
             o_type = str(getattr(o, "order_type", "") or getattr(o, "type", "") or "").lower()
             o_side = str(getattr(o, "side", "")).lower()
@@ -192,4 +200,3 @@ class OrdersMixin:
             else:
                 log.error("Stop update failed %s: %s", symbol, e)
             return None
-

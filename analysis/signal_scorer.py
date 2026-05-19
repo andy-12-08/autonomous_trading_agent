@@ -7,6 +7,8 @@ from analysis.signal_rules import SignalRulesMixin
 
 
 class SignalScorer(SignalRulesMixin):
+    """Score indicator snapshots and filter watchlists by setup quality."""
+
     @staticmethod
     def score_setup(sig: dict,
                     bias_15: dict | None = None,
@@ -68,7 +70,7 @@ class SignalScorer(SignalRulesMixin):
 
         # -- EMA EXTENSION PENALTY -------------------------------------------------
         # Price too far above EMA21 = chasing a move already done; pullback risk high.
-        # Penalty scales with extension: 1.5% above ? -0.6 pts, 3% above ? -1.2 pts, cap -2.0.
+        # Penalty scales with extension: 1.5% above is -0.6 pts, 3% above is -1.2 pts, cap -2.0.
         if ema21 > 0 and price > 0:
             ext = (price - ema21) / ema21
             if ext > 0.015:
@@ -237,10 +239,10 @@ class SignalScorer(SignalRulesMixin):
             score -= 0.8; ev.append("-0.8 below VWAP + bearish EMA")
 
         # -- TIME-OF-DAY ADJUSTMENT ------------------------------------------------
-        # 9:35-10:00: opening range  fakeout risk high ? slight penalty
-        # 10:00-11:30: institutional settlement  momentum most reliable ? no change
-        # 11:30-14:00: lunch doldrums  momentum fails ? penalty
-        # 14:00-15:44: power hour  trend continuation active ? slight boost
+        # 9:35-10:00: opening range fakeout risk high, so apply a slight penalty.
+        # 10:00-11:30: institutional settlement; momentum is most reliable.
+        # 11:30-14:00: lunch doldrums make momentum less reliable.
+        # 14:00-15:44: power hour trend continuation is active.
         _et_now  = datetime.now(config.ET)
         _cur_min = _et_now.hour * 60 + _et_now.minute
         if 9 * 60 + 35 <= _cur_min < 10 * 60:

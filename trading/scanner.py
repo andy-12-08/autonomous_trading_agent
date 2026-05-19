@@ -62,6 +62,14 @@ class ScannerMixin:
         _t_loop_start = _time.monotonic()
 
         def _compute_symbol(symbol):
+            """Build a scored watchlist row for one symbol.
+
+            Args:
+                symbol: Ticker to evaluate using cached 5-minute bars.
+
+            Returns:
+                Watchlist row dict, or None when the symbol fails screening.
+            """
             df = bars_5m.get(symbol)
             if df is None or df.empty or len(df) < 25:
                 return None
@@ -201,4 +209,3 @@ class ScannerMixin:
                      bull15, bullday,
                      " | ".join(item["signal_evidence"][:3]))
         return scored
-

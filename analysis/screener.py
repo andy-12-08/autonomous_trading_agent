@@ -234,7 +234,7 @@ class Screener:
         candidates.sort(key=lambda x: x[1], reverse=True)
         result = [sym for sym, _ in candidates[:top]]
 
-        log.info("Snapshot screen: %d/%d passed filters ? returning top %d",
+        log.info("Snapshot screen: %d/%d passed filters; returning top %d",
                  len(candidates), len(snapshots), len(result))
 
         self._snapshot_cache    = result
@@ -261,7 +261,7 @@ class Screener:
         Total capped at UNIVERSE_MAX_SYMBOLS (150).
 
         Returns:
-            Final symbol list ordered by priority (snapshot ? actives ? gainers ?
+            Final symbol list ordered by priority (snapshot, actives, gainers,
             fixed watchlist), capped at config.UNIVERSE_MAX_SYMBOLS.
         """
         watchlist_set = set(config.WATCHLIST)
@@ -269,6 +269,14 @@ class Screener:
         result: list[str] = []
 
         def add(sym: str) -> bool:
+            """Append a symbol once while preserving priority order.
+
+            Args:
+                sym: Symbol candidate from one of the universe sources.
+
+            Returns:
+                True when the symbol was added; False when it was empty or duplicate.
+            """
             sym = sym.strip().upper()
             if sym and sym not in seen:
                 seen.add(sym)

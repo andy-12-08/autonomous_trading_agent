@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timezone
 import config
 from core.database import log
@@ -22,8 +23,7 @@ class PositionsMixin:
         # this tick to avoid spuriously removing all open positions.
         _skip_bracket_exits = False
         if not broker_positions and db_positions:
-            import time as _time
-            _time.sleep(1.5)
+            time.sleep(1.5)
             broker_positions = self.broker.get_positions()
             if not broker_positions:
                 log.warning(

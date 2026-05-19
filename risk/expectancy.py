@@ -1,4 +1,5 @@
 import sqlite3
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
 import config
@@ -166,7 +167,6 @@ class ExpectancyEngine:
         Returns:
             {setup_type: expectancy_dict}  only setups with >= min_sample trades.
         """
-        from collections import defaultdict
         buckets: dict[str, list[dict]] = defaultdict(list)
 
         for d in decisions:
@@ -230,8 +230,6 @@ class ExpectancyEngine:
         Returns:
             {symbol: reason} for each symbol currently in cooling-off.
         """
-        from collections import defaultdict
-
         closed = [d for d in decisions
                   if d.get("action") in ("SELL", "PARTIAL_SELL")
                   and d.get("pnl") is not None]

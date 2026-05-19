@@ -170,6 +170,14 @@ class TradeCycleMixin:
         pool.shutdown(wait=False)
 
         def _safe(fut):
+            """Return a future result if available, otherwise an empty dict.
+
+            Args:
+                fut: Future returned by the enrichment thread pool.
+
+            Returns:
+                Enrichment mapping or an empty dict on timeout/error.
+            """
             try:
                 return fut.result(timeout=0) if fut.done() else {}
             except Exception:
@@ -413,7 +421,7 @@ class TradeCycleMixin:
             # FOMC keeps its own stricter 14:30 ET lock.
             if not is_fomc and (hour > 10 or (hour == 10 and minute >= 30)):
                 self._daily_plan["risk_posture"] = "conservative"
-                log.warning("Macro unlock: past 10:30 ET  downgrading stand_aside ? conservative "
+                log.warning("Macro unlock: past 10:30 ET  downgrading stand_aside to conservative "
                             "(NFP/CPI dust settled; FOMC would stay locked)")
 
             if self._daily_plan.get("risk_posture") == "stand_aside":
@@ -425,7 +433,7 @@ class TradeCycleMixin:
                     if spy_gain >= 0.5:
                         self._daily_plan["risk_posture"] = "conservative"
                         log.warning("Macro override: SPY +%.2f%% since open  downgrading "
-                                    "stand_aside ? conservative.", spy_gain)
+                                    "stand_aside to conservative.", spy_gain)
                     else:
                         reason = (self._daily_plan.get("special_warnings") or ["macro/market conditions"])[0]
                         log.warning("SCAN POSTURE: STAND_ASIDE  %s", reason[:120])

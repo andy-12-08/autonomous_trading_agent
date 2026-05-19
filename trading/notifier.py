@@ -89,7 +89,7 @@ class Notifier:
         overall_exp = self.expectancy.compute_expectancy(all_dec)
         by_setup    = self.expectancy.compute_expectancy_by_setup(all_dec)
 
-        status_line = "? PROFITABLE DAY" if net_pnl >= 0 else "?? LOSS DAY"
+        status_line = "PROFITABLE DAY" if net_pnl >= 0 else "LOSS DAY"
 
         sep = "-" * 54
 
@@ -126,7 +126,7 @@ class Notifier:
 
         if overall_exp:
             sign   = "+" if overall_exp["is_positive"] else ""
-            status = "POSITIVE EDGE ?" if overall_exp["is_positive"] else "NEGATIVE EDGE ?  REVIEW STRATEGY"
+            status = "POSITIVE EDGE" if overall_exp["is_positive"] else "NEGATIVE EDGE - REVIEW STRATEGY"
             lines += [
                 sep,
                 "  ALL-TIME EXPECTANCY",
@@ -145,7 +145,7 @@ class Notifier:
             for st, exp in sorted(by_setup.items(),
                                    key=lambda x: x[1]["expectancy"], reverse=True):
                 sign = "+" if exp["is_positive"] else ""
-                flag = "?" if exp["is_positive"] else "? SUPPRESS"
+                flag = "OK" if exp["is_positive"] else "SUPPRESS"
                 lines.append(
                     f"  {st[:24]:24s} | E={sign}${exp['expectancy']:5.2f} "
                     f"WR={exp['win_rate']:.0%} "
@@ -160,9 +160,9 @@ class Notifier:
             lines.append("")
 
         if p.get("special_warnings"):
-            lines += [sep, "  ? WARNINGS FLAGGED", sep]
+            lines += [sep, "  WARNINGS FLAGGED", sep]
             for w in p["special_warnings"]:
-                lines.append(f"  ? {w}")
+                lines.append(f"  - {w}")
             lines.append("")
 
         executed = [d for d in dec if d.get("action") in ("BUY", "SELL", "PARTIAL_SELL")]
@@ -181,7 +181,7 @@ class Notifier:
         if drift:
             lines += [
                 sep,
-                "  ?  CONFIDENCE DRIFT DETECTED",
+                "  CONFIDENCE DRIFT DETECTED",
                 sep,
                 f"  Recent avg  : {drift['recent_avg']}/10  (last 7 days, n={drift['recent_n']})",
                 f"  Baseline    : {drift['baseline_avg']}/10  (90-day avg, n={drift['baseline_n']})",
@@ -198,6 +198,47 @@ class Notifier:
         ]
 
         return "\n".join(lines)
+
+    def _send_email_async(self, msg: MIMEText, success_context: str, failure_context: str) -> None:
+        """Send an email in a background thread with SSL and STARTTLS fallback.
+
+        Args:
+            msg: Fully prepared MIME message.
+            success_context: Short log description for successful sends.
+            failure_context: Short log description for failed sends.
+
+        Returns:
+            None.
+        """
+        def _send():
+            """Run the SMTP retry loop for the prepared message.
+
+            Returns:
+                None.
+            """
+            for attempt in range(3):
+                if attempt:
+                    time.sleep(2 ** attempt)
+                try:
+                    with smtplib.SMTP_SSL(self.config.SMTP_HOST, 465, timeout=10) as server:
+                        server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
+                        server.send_message(msg)
+                    log.info("%s sent to %s", success_context, self.config.RECIPIENT_EMAIL)
+                    return
+                except Exception:
+                    try:
+                        with smtplib.SMTP(self.config.SMTP_HOST, 587, timeout=10) as server:
+                            server.ehlo()
+                            server.starttls()
+                            server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
+                            server.send_message(msg)
+                        log.info("%s sent via STARTTLS to %s", success_context, self.config.RECIPIENT_EMAIL)
+                        return
+                    except Exception as e2:
+                        log.warning("%s attempt %d/3 failed: %s", failure_context, attempt + 1, e2)
+            log.error("%s failed after 3 attempts", failure_context)
+
+        threading.Thread(target=_send, daemon=True).start()
 
     def send_trade_alert(
         self,
@@ -245,15 +286,15 @@ class Notifier:
 
         if action == "BUY":
             risk_dollars = (price - stop_loss) * qty if stop_loss else 0
-            subject = f"?? BUY {symbol}  {qty:.0f} @ ${price:.2f} | risk ${risk_dollars:.0f}"
+            subject = f"BUY {symbol}  {qty:.0f} @ ${price:.2f} | risk ${risk_dollars:.0f}"
         elif pnl is not None and pnl >= 0:
             pnl_pct = pnl / cost * 100 if cost else 0
-            prefix  = "?? PARTIAL SELL" if action == "PARTIAL_SELL" else "? SELL"
+            prefix  = "PARTIAL SELL" if action == "PARTIAL_SELL" else "SELL"
             subject = f"{prefix} {symbol}  +${pnl:.2f} (+{pnl_pct:.1f}%)"
         else:
             pnl_pct = (pnl / cost * 100) if (pnl and cost) else 0
-            subject = f"?? SELL {symbol}  ${pnl:.2f} ({pnl_pct:.1f}%)" if pnl is not None \
-                      else f"?? {action} {symbol} @ ${price:.2f}"
+            subject = f"SELL {symbol}  ${pnl:.2f} ({pnl_pct:.1f}%)" if pnl is not None \
+                      else f"{action} {symbol} @ ${price:.2f}"
 
         lines = [
             f"+------------------------------------------------------+",
@@ -309,32 +350,11 @@ class Notifier:
         msg["From"]    = self.config.SMTP_USER
         msg["To"]      = self.config.RECIPIENT_EMAIL
 
-        def _send():
-            for attempt in range(3):
-                if attempt:
-                    time.sleep(2 ** attempt)  # 2s, 4s
-                try:
-                    with smtplib.SMTP_SSL(self.config.SMTP_HOST, 465, timeout=10) as server:
-                        server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
-                        server.send_message(msg)
-                    log.info("Trade alert sent ? %s  [%s %s @ $%.2f]",
-                             self.config.RECIPIENT_EMAIL, action, symbol, price)
-                    return
-                except Exception:
-                    try:
-                        with smtplib.SMTP(self.config.SMTP_HOST, 587, timeout=10) as server:
-                            server.ehlo()
-                            server.starttls()
-                            server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
-                            server.send_message(msg)
-                        log.info("Trade alert sent (STARTTLS) ? %s  [%s %s @ $%.2f]",
-                                 self.config.RECIPIENT_EMAIL, action, symbol, price)
-                        return
-                    except Exception as e2:
-                        log.warning("Trade alert attempt %d/3 failed: %s", attempt + 1, e2)
-            log.error("Trade alert email failed after 3 attempts: %s %s @ $%.2f", action, symbol, price)
-
-        threading.Thread(target=_send, daemon=True).start()
+        self._send_email_async(
+            msg,
+            success_context=f"Trade alert [{action} {symbol} @ ${price:.2f}]",
+            failure_context=f"Trade alert {action} {symbol} @ ${price:.2f}",
+        )
 
     def send_daily_summary(self):
         """Send end-of-day summary email in a background thread. No-op if SMTP missing.
@@ -353,40 +373,19 @@ class Notifier:
             data    = self._load_today_data()
             body    = self._build_body(data)
             net_pnl = data["summary"].get("net_pnl", 0)
-            emoji   = "?" if net_pnl >= 0 else "??"
-            subject = f"{emoji} Trading Bot {data['today']} | P&L ${net_pnl:+.2f}"
+            result  = "Profit" if net_pnl >= 0 else "Loss"
+            subject = f"Trading Bot {data['today']} | {result} | P&L ${net_pnl:+.2f}"
 
             msg            = MIMEText(body, "plain", "utf-8")
             msg["Subject"] = subject
             msg["From"]    = self.config.SMTP_USER
             msg["To"]      = self.config.RECIPIENT_EMAIL
 
-            def _send():
-                for attempt in range(3):
-                    if attempt:
-                        time.sleep(2 ** attempt)
-                    try:
-                        with smtplib.SMTP_SSL(self.config.SMTP_HOST, 465, timeout=10) as server:
-                            server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
-                            server.send_message(msg)
-                        log.info("Daily summary email sent ? %s  (P&L $%+.2f)",
-                                 self.config.RECIPIENT_EMAIL, net_pnl)
-                        return
-                    except Exception:
-                        try:
-                            with smtplib.SMTP(self.config.SMTP_HOST, 587, timeout=10) as server:
-                                server.ehlo()
-                                server.starttls()
-                                server.login(self.config.SMTP_USER, self.config.SMTP_PASS)
-                                server.send_message(msg)
-                            log.info("Daily summary sent (STARTTLS) ? %s  (P&L $%+.2f)",
-                                     self.config.RECIPIENT_EMAIL, net_pnl)
-                            return
-                        except Exception as e2:
-                            log.warning("Daily summary attempt %d/3 failed: %s", attempt + 1, e2)
-                log.error("Failed to send daily summary email after 3 attempts")
-
-            threading.Thread(target=_send, daemon=True).start()
+            self._send_email_async(
+                msg,
+                success_context=f"Daily summary (P&L ${net_pnl:+.2f})",
+                failure_context="Daily summary email",
+            )
 
         except Exception as e:
             log.error("Failed to prepare daily summary email: %s", e)

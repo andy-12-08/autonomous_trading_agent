@@ -26,6 +26,11 @@ class FloatCache:
         self._init_table()
 
     def _init_table(self) -> None:
+        """Create the float_cache table if it does not already exist.
+
+        Returns:
+            None.
+        """
         conn = sqlite3.connect(self._db_path, timeout=10)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS float_cache (
@@ -111,6 +116,14 @@ class FloatCache:
     # -- Internal helpers ------------------------------------------------------
 
     def _needs_refresh(self, symbol: str) -> bool:
+        """Return True when a symbol is missing from valid in-memory or DB cache.
+
+        Args:
+            symbol: Ticker to inspect.
+
+        Returns:
+            True if the symbol should be fetched from yfinance.
+        """
         with self._lock:
             if symbol in self._mem:
                 return False
@@ -118,6 +131,14 @@ class FloatCache:
         return val is None  # None means not in DB or expired
 
     def _read_db(self, symbol: str) -> float | None:
+        """Read a non-expired float value from SQLite into memory cache.
+
+        Args:
+            symbol: Ticker to load.
+
+        Returns:
+            Float shares or None when absent, expired, or unreadable.
+        """
         try:
             conn = sqlite3.connect(self._db_path, timeout=5)
             row  = conn.execute(
@@ -137,6 +158,14 @@ class FloatCache:
         return None
 
     def _fetch_and_store(self, symbol: str) -> None:
+        """Fetch one symbol's float from yfinance and store it in both caches.
+
+        Args:
+            symbol: Ticker to refresh.
+
+        Returns:
+            None.
+        """
         float_shares = self._fetch_yfinance(symbol)
         try:
             conn = sqlite3.connect(self._db_path, timeout=10)
@@ -153,6 +182,14 @@ class FloatCache:
 
     @staticmethod
     def _fetch_yfinance(symbol: str) -> float | None:
+        """Fetch float shares from yfinance fast_info.
+
+        Args:
+            symbol: Ticker to query.
+
+        Returns:
+            Float shares as a float, or None when unavailable.
+        """
         try:
             import yfinance as yf
             info = yf.Ticker(symbol).fast_info

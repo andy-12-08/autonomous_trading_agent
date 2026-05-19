@@ -96,6 +96,14 @@ class MarketDataMixin:
         batches = [symbols[i:i + _BATCH_SIZE] for i in range(0, len(symbols), _BATCH_SIZE)]
 
         def _fetch_batch(batch: list[str]):
+            """Fetch one symbol batch from Alpaca.
+
+            Args:
+                batch: Ticker symbols to request in a single bars call.
+
+            Returns:
+                Tuple of the Alpaca bars response and the batch symbols.
+            """
             req = StockBarsRequest(
                 symbol_or_symbols=batch,
                 timeframe=tf,
@@ -403,6 +411,15 @@ class MarketDataMixin:
             search_after = datetime.now(timezone.utc) - timedelta(hours=48)
 
         def _extract_fill(o) -> dict | None:
+            """Extract a matching filled sell order into a compact dict.
+
+            Args:
+                o: Alpaca order object to inspect.
+
+            Returns:
+                Fill metadata when the order is a filled sell for the target
+                symbol, otherwise None.
+            """
             if str(getattr(o, "symbol", "")).upper() != sym_up:
                 return None
             side   = str(getattr(o, "side",            "")).lower()
@@ -506,4 +523,3 @@ class MarketDataMixin:
                 pass
             time.sleep(delay)
         return None
-

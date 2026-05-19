@@ -21,6 +21,11 @@ class NewsStream:
     LIMIT_BACKOFF_S  = 90   # longer wait when Alpaca reports connection limit exceeded
 
     def __init__(self):
+        """Initialize thread, WebSocket, and in-memory article cache state.
+
+        Returns:
+            None.
+        """
         self._cache: dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
         self._lock         = threading.Lock()
         self._ws           = None
@@ -91,11 +96,21 @@ class NewsStream:
 
     @property
     def is_connected(self) -> bool:
+        """Return whether the latest WebSocket subscription handshake completed.
+
+        Returns:
+            True when subscribed to the Alpaca news stream.
+        """
         return self._connected
 
     # -- Internal WebSocket handlers -------------------------------------------
 
     def _loop(self) -> None:
+        """Run the reconnecting WebSocket loop until stop() is called.
+
+        Returns:
+            None.
+        """
         while self._running:
             self._limit_hit = False
             try:
@@ -119,6 +134,14 @@ class NewsStream:
                 self._stop_event.wait(timeout=wait)
 
     def _on_open(self, ws) -> None:
+        """Authenticate immediately after the WebSocket opens.
+
+        Args:
+            ws: websocket-client WebSocketApp instance.
+
+        Returns:
+            None.
+        """
         ws.send(json.dumps({
             "action": "auth",
             "key":    config.ALPACA_KEY    or "",
@@ -126,6 +149,15 @@ class NewsStream:
         }))
 
     def _on_message(self, ws, message: str) -> None:
+        """Handle Alpaca WebSocket success, news, and error messages.
+
+        Args:
+            ws: websocket-client WebSocketApp instance.
+            message: Raw JSON message payload from Alpaca.
+
+        Returns:
+            None.
+        """
         try:
             events = json.loads(message)
         except Exception:
@@ -156,6 +188,14 @@ class NewsStream:
                                 self.LIMIT_BACKOFF_S)
 
     def _handle_news(self, msg: dict) -> None:
+        """Cache one Alpaca news event under each associated symbol.
+
+        Args:
+            msg: Parsed Alpaca news message.
+
+        Returns:
+            None.
+        """
         article = {
             "headline":   msg.get("headline", ""),
             "summary":    (msg.get("summary") or "")[:200],
@@ -169,9 +209,28 @@ class NewsStream:
                     self._cache[sym].appendleft(article)
 
     def _on_error(self, ws, error) -> None:
+        """Mark the stream disconnected after a WebSocket error.
+
+        Args:
+            ws: websocket-client WebSocketApp instance.
+            error: Error object or message from websocket-client.
+
+        Returns:
+            None.
+        """
         log.warning("NewsStream error: %s", error)
         self._connected = False
 
     def _on_close(self, ws, code, msg) -> None:
+        """Mark the stream disconnected after a WebSocket close frame.
+
+        Args:
+            ws: websocket-client WebSocketApp instance.
+            code: Close status code.
+            msg: Close reason text.
+
+        Returns:
+            None.
+        """
         self._connected = False
         log.info("NewsStream: connection closed (code=%s)", code)

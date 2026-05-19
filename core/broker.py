@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, time as _time
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOrdersRequest
@@ -26,7 +26,25 @@ class AlpacaBroker(OrdersMixin, MarketDataMixin):
             if hasattr(_c, "_session"):
                 _orig = _c._session.request
                 def _make_patched(orig):
+                    """Wrap an Alpaca session request method with a default timeout.
+
+                    Args:
+                        orig: Original requests-compatible call method.
+
+                    Returns:
+                        Callable that injects the broker timeout into every request.
+                    """
                     def _patched(method, url, **kw):
+                        """Call the wrapped request method with a forced timeout.
+
+                        Args:
+                            method: HTTP method string.
+                            url: URL being requested.
+                            **kw: Additional request keyword arguments.
+
+                        Returns:
+                            Whatever the original request method returns.
+                        """
                         kw["timeout"] = self._ALPACA_TIMEOUT
                         return orig(method, url, **kw)
                     return _patched
@@ -82,6 +100,15 @@ class AlpacaBroker(OrdersMixin, MarketDataMixin):
         sym_up = symbol.upper()
 
         def _is_stop_sell(o, inherited_sym: str = "") -> bool:
+            """Return whether an order or bracket leg is a stop-like sell for symbol.
+
+            Args:
+                o: Alpaca order or child leg object.
+                inherited_sym: Parent symbol to use when child legs omit symbol.
+
+            Returns:
+                True when the object is a matching stop sell order.
+            """
             o_sym  = str(getattr(o, "symbol", "") or inherited_sym).upper()
             side   = str(getattr(o, "side",   "")).lower()
             o_type = str(getattr(o, "order_type", "") or getattr(o, "type", "") or "").lower()
@@ -106,8 +133,6 @@ class AlpacaBroker(OrdersMixin, MarketDataMixin):
             clock = self._trade_client.get_clock()
             return clock.is_open
         except Exception:
-            import datetime as _dt
-
-            now_et = _dt.datetime.now(config.ET)
+            now_et = datetime.now(config.ET)
             return (now_et.weekday() < 5 and
-                    _dt.time(9, 30) <= now_et.time() <= _dt.time(16, 0))
+                    _time(9, 30) <= now_et.time() <= _time(16, 0))
