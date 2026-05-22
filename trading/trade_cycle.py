@@ -285,13 +285,22 @@ class TradeCycleMixin:
             # 15-min timeframe to be fully bullish (EMA + VWAP + MACD all positive).
             # Mean-reversion and vwap_reclaim setups are exempt: they work precisely
             # because price is NOT yet aligned on the higher timeframe.
+            # Exception: gap_and_go setups with gap >= GAP_AND_GO_MIN_PCT and above_vwap
+            # skip the 15-min gate — the first 15-min bar doesn't close until 9:45 so
+            # requiring full alignment blocks all early gap entries. The extension gate,
+            # spread gate, and ATR gate in buy_executor are the backstop.
             setup_hint = item.get("setup_type_hint", "momentum")
             if setup_hint in ("momentum", "gap_and_go"):
                 b15    = item.get("bias_15min") or {}
                 bull15 = sum([bool(b15.get("ema_bull")),
                               bool(b15.get("above_vwap")),
                               bool(b15.get("macd_bull"))])
-                if bull15 < 3:
+                ind        = item.get("indicators", {})
+                gap_pct    = float(ind.get("gap_pct", 0))
+                above_vwap = bool(ind.get("above_vwap", False))
+                if setup_hint == "gap_and_go" and gap_pct >= config.GAP_AND_GO_MIN_PCT and above_vwap:
+                    pass  # exempt: extension/spread/ATR gates handle quality in buy_executor
+                elif bull15 < 3:
                     pre_vetoed.append((sym,
                         f"15min gate: {bull15}/3 bullish  momentum entries require full 15-min alignment"))
                     continue
@@ -407,45 +416,7 @@ class TradeCycleMixin:
         in_high_vol_window = self.is_high_volume_window(hour, minute)
         midday             = not in_high_vol_window
 
-        if self._daily_plan and self._daily_plan.get("risk_posture") == "stand_aside":
-            is_fomc = (
-                self._daily_plan.get("is_fomc_day", False) or
-                any("FOMC" in str(w) for w in (self._daily_plan.get("special_warnings") or []))
-            )
-            if is_fomc and (hour > 14 or (hour == 14 and minute >= 30)):
-                is_fomc = False
-                log.info("FOMC post-announcement window (>14:30 ET)  unlocking SPY override check")
-
-            # NFP/CPI/GDP print at 8:30 ET; market absorbs the data within ~2h.
-            # After 10:30 ET, downgrade to conservative so the prime window isn't lost.
-            # FOMC keeps its own stricter 14:30 ET lock.
-            if not is_fomc and (hour > 10 or (hour == 10 and minute >= 30)):
-                self._daily_plan["risk_posture"] = "conservative"
-                log.warning("Macro unlock: past 10:30 ET  downgrading stand_aside to conservative "
-                            "(NFP/CPI dust settled; FOMC would stay locked)")
-
-            if self._daily_plan.get("risk_posture") == "stand_aside":
-                spy_bars = self.broker.get_bars("SPY", "5Min", days=1)
-                if not spy_bars.empty and not is_fomc:
-                    spy_now  = float(spy_bars["close"].iloc[-1])
-                    spy_open = float(spy_bars["open"].iloc[0])
-                    spy_gain = (spy_now - spy_open) / spy_open * 100
-                    if spy_gain >= 0.5:
-                        self._daily_plan["risk_posture"] = "conservative"
-                        log.warning("Macro override: SPY +%.2f%% since open  downgrading "
-                                    "stand_aside to conservative.", spy_gain)
-                    else:
-                        reason = (self._daily_plan.get("special_warnings") or ["macro/market conditions"])[0]
-                        log.warning("SCAN POSTURE: STAND_ASIDE  %s", reason[:120])
-                        return
-                elif is_fomc:
-                    reason = (self._daily_plan.get("special_warnings") or ["FOMC day  locked until 14:30 ET"])[0]
-                    log.warning("SCAN POSTURE: STAND_ASIDE (FOMC locked)  %s", reason[:120])
-                    return
-                else:
-                    log.warning("SCAN POSTURE: STAND_ASIDE  SPY bars unavailable, staying out")
-                    return
-        elif self._daily_plan and self._daily_plan.get("risk_posture") == "conservative":
+        if self._daily_plan and self._daily_plan.get("risk_posture") == "conservative":
             reason = (self._daily_plan.get("special_warnings") or ["macro/market conditions"])[0]
             log.warning("SCAN POSTURE: CONSERVATIVE  %s", reason[:120])
 

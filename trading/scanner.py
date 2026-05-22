@@ -53,10 +53,16 @@ class ScannerMixin:
             _spy_c = spy_5m["close"].iloc[-4:].values
             _spy_chg_pct = (_spy_c[-1] - _spy_c[-4]) / _spy_c[-4] * 100
             self._spy_trend_ok = _spy_chg_pct > -0.15
-            log.info("SPY trend: %s (close %.2f vs %.2f, 3 bars ago, chg=%.3f%%)",
-                     "UP" if self._spy_trend_ok else "DOWN", _spy_c[-1], _spy_c[-4], _spy_chg_pct)
+            if self._spy_trend_ok:
+                self._spy_trend_ok_streak = getattr(self, "_spy_trend_ok_streak", 0) + 1
+            else:
+                self._spy_trend_ok_streak = 0
+            log.info("SPY trend: %s (close %.2f vs %.2f, 3 bars ago, chg=%.3f%%) streak=%d",
+                     "UP" if self._spy_trend_ok else "DOWN", _spy_c[-1], _spy_c[-4],
+                     _spy_chg_pct, self._spy_trend_ok_streak)
         else:
             self._spy_trend_ok = True  # can't determine  don't block
+            self._spy_trend_ok_streak = getattr(self, "_spy_trend_ok_streak", 0) + 1
 
         raw = []
         _t_loop_start = _time.monotonic()

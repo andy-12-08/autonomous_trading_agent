@@ -177,11 +177,30 @@ class OrdersMixin:
                 symbol, new_stop, mkt_price)
             return None
         orders = self.get_open_orders()
+
+        # Pass 1: cancel stop orders matched by symbol (standalone stops and nested legs)
         for o in orders:
             _cancel_if_stop(o)
             parent_sym = str(getattr(o, "symbol", "")).upper()
             for leg in (getattr(o, "legs", None) or []):
                 _cancel_if_stop(leg, inherited_sym=parent_sym)
+
+        # Pass 2: after a bracket buy fills, Alpaca promotes its stop/TP legs to
+        # independent open orders with no symbol field.  Match them by sell-side +
+        # qty so we can free the reserved shares before submitting the new stop.
+        for o in orders:
+            o_sym  = str(getattr(o, "symbol", "") or "").upper()
+            if o_sym:
+                continue  # already handled in pass 1
+            o_side = str(getattr(o, "side", "")).lower()
+            o_qty  = float(getattr(o, "qty", 0) or 0)
+            if "sell" in o_side and abs(o_qty - qty) < 0.01:
+                try:
+                    self._trade_client.cancel_order_by_id(str(o.id))
+                    log.info("Cancelled orphaned bracket leg %s for %s (qty=%.0f)", o.id, symbol, o_qty)
+                except Exception as exc:
+                    log.warning("Could not cancel orphaned bracket leg %s for %s: %s", o.id, symbol, exc)
+
         req = StopOrderRequest(
             symbol=symbol,
             qty=qty,

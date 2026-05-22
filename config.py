@@ -30,7 +30,7 @@ MAX_DAILY_CAPITAL  = round(ACCOUNT_SIZE * MAX_DAILY_CAPITAL_PCT, -2)   # $20,000
 
 # Risk per trade
 # Target 0.75% of equity (risk-size); hard ceiling = MAX_RISK_PER_TRADE_HARD_PCT of equity.
-MAX_RISK_PER_TRADE_PCT = 0.0075
+MAX_RISK_PER_TRADE_PCT = 0.005
 MAX_RISK_PER_TRADE     = round(ACCOUNT_SIZE * MAX_RISK_PER_TRADE_HARD_PCT, 2)  # $375
 
 # Daily drawdown guard
@@ -42,10 +42,10 @@ MAX_TOTAL_EXPOSURE_PCT = 0.80       # hard ceiling 80% of equity  margin gives t
 MIN_TOTAL_EXPOSURE_PCT = 0.30       # deploy at least 30% when conditions allow
 
 # Position limits
-MAX_CONCURRENT_POSITIONS = 8           # 8 simultaneous positions across 8 sector buckets
+MAX_CONCURRENT_POSITIONS = 999         # no hard cap; daily capital cap is the real governor
 MAX_POSITION_SIZE        = MAX_DAILY_CAPITAL  # updated alongside MAX_DAILY_CAPITAL each morning
 MIN_POSITION_SIZE        = 0.0         # no minimum position size
-MAX_TRADES_PER_DAY       = 20          # PDT unlocked at $25k  quality gate does real filtering
+MAX_TRADES_PER_DAY       = 999         # effectively unlimited; real governor is concurrent cap + daily capital
 
 # Conviction-weighted position sizing.
 # Each entry is (min_signal_score, fraction_of_MAX_DAILY_CAPITAL).
@@ -70,6 +70,27 @@ INTRADAY_PNL_TIERS = [
     (-0.015, 0.40),   # -1.5%+ drawdown: size 0.40  severe, one bad trade from hard stop
     (-0.010, 0.70),   # -1.0%+ drawdown: size 0.70  early warning, dial back aggression
 ]
+
+# Macro-event position sizing.
+# On days where the morning study flags a macro warning (FOMC, CPI, NFP, GDP etc)
+# the daily plan risk_posture may be stand_aside or conservative but we still trade.
+# To limit damage from news-driven whipsaws, cap each position at this fraction of
+# its normal conviction-tier size.  0.5 = half-size on macro days.
+MACRO_WARNING_SIZE_FACTOR = 0.5
+
+# Hard entry extension gate.
+# Blocks any new long entry where price is more than this % above EMA21.
+# The score already penalises extension; this hard-stops outright chasing.
+# 1.5% matches the penalty trigger in signal_scorer — once the score deducts,
+# we also refuse to execute rather than letting a 10/10 score override it.
+MAX_EMA21_EXTENSION_PCT = 0.015
+
+# Entry momentum gate.
+# Requires the stock to be actively rising at the moment of entry.
+# Pass if ANY of: last 5-min bar is green, >=2 of last 3 bars are green,
+# or price is >ENTRY_MOMENTUM_MIN_PCT% higher than 15 minutes ago.
+# Gap-and-go and VWAP-reclaim setups bypass this gate (they self-confirm).
+ENTRY_MOMENTUM_MIN_PCT = 0.05   # price must be at least 0.05% above where it was 15 min ago
 
 
 # Quality filters

@@ -352,4 +352,17 @@ class IndicatorEngine(PatternsMixin):
             # Volume on the bar BEFORE the current one  used to detect single-candle
             # volume spikes vs sustained buying pressure on VWAP reclaim setups.
             "prev_vol_ratio":  round(float(prev.get("vol_ratio", 1.0)), 2),
+            # -- Short-term price direction (entry momentum) -----------------------
+            # last_bar_bullish: most recent 5-min candle closed above its open (green bar).
+            # bars_rising_3: how many of the last 3 bars are green (0-3).
+            # price_vs_3bars_ago: % change vs 15 min ago — positive = actively climbing.
+            "last_bar_bullish": bool(float(last["close"]) > float(last["open"]))
+                                 if "open" in last.index else False,
+            "bars_rising_3": int(sum(
+                1 for i in range(-3, 0)
+                if len(df) >= abs(i) and float(df.iloc[i]["close"]) > float(df.iloc[i]["open"])
+            )),
+            "price_vs_3bars_ago": round(
+                (float(last["close"]) - float(df.iloc[-4]["close"])) / float(df.iloc[-4]["close"]) * 100, 3
+            ) if len(df) >= 4 else 0.0,
         }

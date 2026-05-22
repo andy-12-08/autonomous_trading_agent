@@ -103,17 +103,6 @@ class BuyExecutorMixin:
             log.warning("Daily drawdown guard - no new buys. effective_pnl=%.0f", effective_daily_pnl)
             return None
 
-        posture = (self._daily_plan or {}).get("risk_posture", "normal")
-        if posture == "stand_aside":
-            self._record_buy_skip(
-                symbol,
-                d.get("entry_price"),
-                "Morning study: stand_aside - no new entries today",
-                signal_score,
-                "STAND_ASIDE",
-            )
-            return None
-
         setup_type_hint = d.get("setup_type") or d.get("setup_type_hint") or ""
         if suppressed_setups and setup_type_hint and setup_type_hint in suppressed_setups:
             self._record_buy_skip(
@@ -303,12 +292,6 @@ class BuyExecutorMixin:
             log.info("BUCKET veto %s: %s", symbol, bucket_reason)
             return None
 
-        corr_ok, corr_reason = self.market_guard.check_correlation(symbol, positions_snapshot)
-        if not corr_ok:
-            self._record_buy_skip(symbol, price, corr_reason, signal_score, "CORRELATION")
-            log.info("CORRELATION veto %s: %s", symbol, corr_reason)
-            return None
-
         sym_score = float(score_lookup.get(symbol) or 0.0)
         conviction_cap = _conviction_cap(sym_score, self._deployed_today)
         if conviction_cap <= 0:
@@ -321,6 +304,18 @@ class BuyExecutorMixin:
             )
             log.info("Daily capital exhausted for %s - skipping", symbol)
             return None
+
+        # Macro-day half-sizing: FOMC / CPI / NFP days carry whipsaw risk that
+        # overwhelms technical setups.  Still trade, but at half normal size so
+        # a single stop-out can't do serious damage.
+        _warnings = (self._daily_plan or {}).get("special_warnings") or []
+        _macro_keywords = ("FOMC", "CPI", "NFP", "GDP", "PCE", "JOLTS", "PPI")
+        if any(kw in str(w) for kw in _macro_keywords for w in _warnings):
+            conviction_cap = round(conviction_cap * config.MACRO_WARNING_SIZE_FACTOR, 2)
+            log.warning(
+                "Macro-day half-size %s: cap reduced to $%.0f (%.0f%% factor)",
+                symbol, conviction_cap, config.MACRO_WARNING_SIZE_FACTOR * 100,
+            )
 
         log.info(
             "Conviction cap %s: score=%.1f -> $%.0f (%.0f%% of $%.0f daily cap)",
@@ -484,20 +479,61 @@ class BuyExecutorMixin:
                 )
                 return None
 
+        # Entry momentum gate: require the stock to be actively rising at entry.
+        # Blocks entering stocks that are mid-drop — "buy and fall with it" trades.
+        # Gap-and-go setups and VWAP reclaims are exempted (they have their own
+        # confirmation via first-bar-high / vwap_cross_up).
+        _last_bullish   = bool(sig.get("last_bar_bullish", True))
+        _bars_rising    = int(sig.get("bars_rising_3", 3))
+        _price_vs_3ago  = float(sig.get("price_vs_3bars_ago", 0.0))
+        _vwap_reclaim   = bool(sig.get("vwap_cross_up", False))
+        _gap_go         = gate_ctx.get("gap_go", False)
+        _momentum_ok = _last_bullish or _bars_rising >= 2 or _price_vs_3ago > 0.05
+        if not _momentum_ok and not _vwap_reclaim and not _gap_go:
+            reason = (
+                f"Momentum gate: last bar {'red' if not _last_bullish else 'green'}, "
+                f"{_bars_rising}/3 rising bars, price {_price_vs_3ago:+.2f}% vs 15min ago  "
+                f"stock falling at entry, wait for upward momentum"
+            )
+            self._record_buy_skip(symbol, price, reason, signal_score, "MOMENTUM_GATE")
+            log.info("MOMENTUM gate %s: falling at entry (bars_rising=%d, 15m=%+.2f%%) - skipping",
+                     symbol, _bars_rising, _price_vs_3ago)
+            return None
+
+        # Hard extension gate: block outright chasing.
+        # The score already penalises extension; this veto prevents a high raw score
+        # from overriding the warning when price is too far above EMA21.
+        _ema21 = float(sig.get("ema21") or 0)
+        if _ema21 > 0 and price > 0:
+            _ext_pct = (price - _ema21) / _ema21
+            if _ext_pct > config.MAX_EMA21_EXTENSION_PCT:
+                reason = (f"Extension gate: price {_ext_pct:.1%} above EMA21 "
+                          f"(max {config.MAX_EMA21_EXTENSION_PCT:.1%})  chasing, pullback risk")
+                self._record_buy_skip(symbol, price, reason, signal_score, "EXTENSION_GATE")
+                log.info("EXTENSION gate %s: %.1f%% above EMA21 - blocking chase entry", symbol, _ext_pct * 100)
+                return None
+
+        _posture       = (self._daily_plan or {}).get("risk_posture", "normal")
+        _spy_ok        = getattr(self, "_spy_trend_ok", True)
+        _spy_streak    = getattr(self, "_spy_trend_ok_streak", 1)
+        # Require 2 consecutive green SPY scans (~10 min) before allowing new longs
+        # after a bearish SPY reading, regardless of posture.  Conservative needs 3.
+        _required_streak = 3 if _posture == "conservative" else 2
         spy_blocked = (
-            not getattr(self, "_spy_trend_ok", True)
+            (not _spy_ok or _spy_streak < _required_streak)
             and not gate_ctx["gap_go"]
             and not gate_ctx["vwap_reclaim"]
         )
         if spy_blocked:
-            self._record_buy_skip(
-                symbol,
-                price,
-                "SPY trend gate: market trending down - no long entries",
-                signal_score,
-                "SPY_TREND_GATE",
-            )
-            log.info("SPY trend gate %s: SPY bearish last 3 bars - skipping long entry", symbol)
+            if not _spy_ok:
+                reason = "SPY trend gate: market trending down - no long entries"
+                log.info("SPY trend gate %s: SPY bearish last 3 bars - skipping long entry", symbol)
+            else:
+                reason = (f"SPY recovery gate: trend green {_spy_streak}/{_required_streak} scans "
+                          f"- need sustained recovery before new longs")
+                log.info("SPY recovery gate %s: streak=%d/%d - waiting for sustained recovery",
+                         symbol, _spy_streak, _required_streak)
+            self._record_buy_skip(symbol, price, reason, signal_score, "SPY_TREND_GATE")
             return None
 
         quote = self.broker.get_latest_quote(symbol)
@@ -559,7 +595,11 @@ class BuyExecutorMixin:
             Fill price when confirmed, otherwise None.
         """
         order_id = getattr(order, "id", None)
-        fill_price = self.broker.get_fill_price(str(order_id), retries=6, delay=0.5) if order_id else None
+        # Limit orders need more time to fill than market orders — give them 15s.
+        is_limit = str(getattr(order, "order_type", "") or getattr(order, "type", "")).lower() == "limit"
+        retries, delay = (20, 0.75) if is_limit else (6, 0.5)
+        timeout_s = int(retries * delay)
+        fill_price = self.broker.get_fill_price(str(order_id), retries=retries, delay=delay) if order_id else None
         if fill_price is not None:
             return fill_price
 
@@ -567,7 +607,7 @@ class BuyExecutorMixin:
             cancel_failed = False
             try:
                 self.broker._trade_client.cancel_order_by_id(str(order_id))
-                log.warning("BUY %s: order %s not filled after 3s - cancelled", symbol, order_id)
+                log.warning("BUY %s: order %s not filled after %ds - cancelled", symbol, order_id, timeout_s)
             except Exception as exc:
                 cancel_failed = True
                 log.warning("Could not cancel order %s for %s: %s - checking broker position", order_id, symbol, exc)
@@ -584,7 +624,7 @@ class BuyExecutorMixin:
             self._record_buy_skip(
                 symbol,
                 price,
-                "Order submitted but fill not confirmed within 3s - cancelled",
+                f"Order submitted but fill not confirmed within {timeout_s}s - cancelled",
                 signal_score,
                 "NO_FILL",
             )

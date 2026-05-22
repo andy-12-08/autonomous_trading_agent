@@ -103,6 +103,7 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
         self._daily_pre_passed:     set            = set()
         self._force_run:            bool           = False
         self._spy_trend_ok:         bool           = True  # updated each scan; False = SPY trending down
+        self._spy_trend_ok_streak:  int            = 0     # consecutive scans with SPY trend green
 
         self._state_lock  = threading.Lock()
         self._broker_lock = threading.Lock()
@@ -273,6 +274,8 @@ class TradingOrchestrator(ScannerMixin, PositionsMixin, ExecutorMixin, TradeCycl
             gfv_safe, reason = self.gfv_tracker.gfv_safe_to_sell(symbol)
             if not gfv_safe:
                 log.warning("EOD: GFV block on %s  %s. Closing anyway (EOD mandatory).", symbol, reason)
+            # Cancel any open bracket/TP orders first so shares are not "held_for_orders"
+            self.broker.cancel_orders_for_symbol(symbol)
             pnl           = float(getattr(pos, "unrealized_pl",  0) or 0)
             current_price = float(getattr(pos, "current_price",  0) or 0)
             qty           = float(getattr(pos, "qty",            0) or 0)

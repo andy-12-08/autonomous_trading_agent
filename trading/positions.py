@@ -132,10 +132,14 @@ class PositionsMixin:
 
             if not stop_updated and not self.broker.has_active_stop_order(symbol, open_orders):
                 if stop_loss >= current_price:
+                    # Price has breached the stop level and no protective order exists.
+                    # Close immediately rather than letting the loss grow further.
                     log.warning(
-                        "No stop for %s but SL=%.2f >= price=%.2f  not resubmitting "
-                        "(bracket will handle exit or position is at stop level)",
+                        "No stop for %s and SL=%.2f >= price=%.2f  stop breached with no order "
+                        "closing position now",
                         symbol, stop_loss, current_price)
+                    self.broker.cancel_orders_for_symbol(symbol)
+                    self.broker.close_position(symbol)
                 else:
                     log.warning("No active stop order found for %s  resubmitting SL=%.2f",
                                 symbol, stop_loss)
@@ -529,12 +533,6 @@ class PositionsMixin:
             return
 
         in_high_vol_window = self.is_high_volume_window(hour, minute)
-
-        if self._daily_plan:
-            posture = self._daily_plan.get("risk_posture", "normal")
-            if posture in ("stand_aside", "conservative"):
-                reason = (self._daily_plan.get("special_warnings") or ["macro/market conditions"])[0]
-                log.warning("SESSION POSTURE: %s  %s", posture.upper(), reason[:120])
 
         log.info("--- POSITION MGMT %s | vol_window=%s pnl=%.0f deployed=%.0f (%.1f%%) trades=%d/%d ---",
                  now.strftime("%H:%M"), "YES" if in_high_vol_window else "MIDDAY",
