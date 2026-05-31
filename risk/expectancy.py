@@ -280,6 +280,54 @@ class ExpectancyEngine:
                 )
         return suppressed
 
+    def get_timestop_brake(
+        self,
+        decisions: list[dict],
+        lookback_minutes: int = 90,
+        required_consecutive: int = 2,
+    ) -> str | None:
+        """Return a suppression reason when the last N momentum closes were all time-stop losses.
+
+        This fires faster than get_suppressed_setups (which needs 5 trades).
+        Two consecutive time-stop losses means the setup is not working right now —
+        stop entering momentum trades until conditions change.
+
+        Args:
+            decisions: Recent decision dicts from the database.
+            lookback_minutes: Only consider closes within this window.
+            required_consecutive: Number of back-to-back time-stop losses needed to brake.
+
+        Returns:
+            Suppression reason string, or None when brake should not fire.
+        """
+        cutoff_ts = (
+            datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)
+        ).isoformat()
+
+        recent_closes = [
+            d for d in decisions
+            if d.get("action") in ("SELL", "PARTIAL_SELL")
+            and d.get("pnl") is not None
+            and (d.get("ts") or "") >= cutoff_ts[:19]
+        ]
+        # Sort oldest-first so we can read the tail
+        recent_closes.sort(key=lambda d: d.get("ts") or "")
+
+        if len(recent_closes) < required_consecutive:
+            return None
+
+        last_n = recent_closes[-required_consecutive:]
+        all_timestop_losses = all(
+            (d.get("pnl") or 0) < 0 and "Time stop:" in (d.get("reasoning") or "")
+            for d in last_n
+        )
+        if all_timestop_losses:
+            return (
+                f"Fast brake (Rule 19): last {required_consecutive} closes were time-stop losses  "
+                f"momentum not working right now, pausing for {lookback_minutes}min"
+            )
+        return None
+
     def compute_kelly_factor(self, decisions: list[dict]) -> float:
         """Compute the half-Kelly position-size multiplier from historical performance.
 

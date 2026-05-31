@@ -44,7 +44,7 @@ MIN_TOTAL_EXPOSURE_PCT = 0.30       # deploy at least 30% when conditions allow
 # Position limits
 MAX_CONCURRENT_POSITIONS = 999         # no hard cap; daily capital cap is the real governor
 MAX_POSITION_SIZE        = MAX_DAILY_CAPITAL  # updated alongside MAX_DAILY_CAPITAL each morning
-MIN_POSITION_SIZE        = 0.0         # no minimum position size
+MIN_POSITION_SIZE        = 500.0       # skip trades where qty × price < $500 — micro-positions waste trade slots
 MAX_TRADES_PER_DAY       = 999         # effectively unlimited; real governor is concurrent cap + daily capital
 
 # Conviction-weighted position sizing.
@@ -78,12 +78,22 @@ INTRADAY_PNL_TIERS = [
 # its normal conviction-tier size.  0.5 = half-size on macro days.
 MACRO_WARNING_SIZE_FACTOR = 0.5
 
+# Opening-thrust staleness gates (early window 9:30–10:30 ET only).
+# Prevents entering moves that already played out before the bot could act.
+# Exempt: gap_go=True (legitimate large gap) and vwap_reclaim setups.
+# EARLY_THRUST_MAX_OPEN_PCT: block if price is already this far above today's open.
+#   XLV example: entered 0.80% above open after a 10-min thrust — threshold catches it.
+# EARLY_THRUST_MAX_OFF_HIGH: block if price has already faded this far below session high.
+#   WFC example: entered 0.33% below its 9:45 peak while already pulling back — catches it.
+EARLY_THRUST_MAX_OPEN_PCT = 0.65   # >0.65% above open  → opening move is done
+EARLY_THRUST_MAX_OFF_HIGH = -0.25  # >0.25% below session high → already fading
+
 # Hard entry extension gate.
 # Blocks any new long entry where price is more than this % above EMA21.
 # The score already penalises extension; this hard-stops outright chasing.
 # 1.5% matches the penalty trigger in signal_scorer — once the score deducts,
 # we also refuse to execute rather than letting a 10/10 score override it.
-MAX_EMA21_EXTENSION_PCT = 0.015
+MAX_EMA21_EXTENSION_PCT = 0.013  # tightened from 1.5% — bar-timing noise at 1.5% let IONQ slip through
 
 # Entry momentum gate.
 # Requires the stock to be actively rising at the moment of entry.
@@ -201,6 +211,7 @@ STUDY_END_HOUR          = 9    # study ends at 9:30 ET
 STUDY_END_MIN           = 30   # trading begins at the open
 MARKET_CLOSE_HOUR       = 15
 MARKET_CLOSE_MIN        = 45   # last entry window closes at 3:45
+MIN_ENTRY_RUNWAY_MINUTES = 90   # require enough time for breakeven/time-stop logic to work
 
 # Prime entry window  highest-quality momentum occurs in the first 45 min after open.
 # Outside this window, only very high conviction setups are allowed through.
@@ -307,6 +318,15 @@ EARNINGS_BLACKOUT_DAYS = 2        # skip stocks reporting within 2 calendar days
 # because BRACKET_TP_SAFETY=3.0 makes the TP unreachable intraday.
 TIME_STOP_MINUTES      = 60       # max time to wait for thesis to materialise
 TIME_STOP_MIN_GAIN_PCT = 0.0      # exit if position is in the red (pnl < 0) at deadline
+
+# Breakeven feasibility and early-failure exits
+# The bot should only enter if recent movement can realistically reach the
+# breakeven trigger soon. If it enters and immediately fails, exit before the
+# full time-stop window turns a weak entry into a larger loss.
+BREAKEVEN_FEASIBILITY_MULTIPLIER = 1.5   # require 15m move >= breakeven trigger * this
+EARLY_FAILURE_MINUTES            = 15    # earliest age to judge a failed entry
+EARLY_FAILURE_MAX_RED_PCT        = -0.15 # exit if at/below this unrealized % loss
+EARLY_FAILURE_MIN_15M_MOMENTUM   = 0.05  # if still not climbing after entry, cut it
 
 # Partial profit (scale-out)
 PARTIAL_PROFIT_TRIGGER_PCT = 0.50  # sell 50% of shares when price hits 50% of TP range

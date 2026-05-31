@@ -143,15 +143,18 @@ class IndicatorEngine(PatternsMixin):
                 first_bar_low  = float(df["low"].iloc[-1])
                 gap_pct_val    = 0.0
 
+            session_high_val = float(df["high"][_today_mask].max()) if _today_mask.any() else float(df["high"].iloc[-1])
             df["gap_pct"]        = gap_pct_val
             df["today_open"]     = today_open_val
             df["first_bar_high"] = first_bar_high
             df["first_bar_low"]  = first_bar_low
+            df["session_high"]   = session_high_val
         except Exception:
             df["gap_pct"]        = 0.0
             df["today_open"]     = float(df["open"].iloc[-1])
             df["first_bar_high"] = float(df["high"].iloc[-1])
             df["first_bar_low"]  = float(df["low"].iloc[-1])
+            df["session_high"]   = float(df["high"].iloc[-1])
 
         # -- 30-minute Opening Range Breakout (ORB-30) -----------------------------
         # Institutions use the first 30 minutes (6 bars at 5-min) to establish the
@@ -330,8 +333,15 @@ class IndicatorEngine(PatternsMixin):
             "above_vwap":  bool(price > float(last["vwap"])),
             "ema_trend":   "bullish" if last["ema9"] > last["ema21"] else "bearish",
             # -- Gap / opening range -----------------------------------------------
-            "gap_pct":        round(float(last.get("gap_pct",        0)), 2),
-            "today_open":     round(float(last.get("today_open",     0)), 4),
+            "gap_pct":           round(float(last.get("gap_pct",        0)), 2),
+            "today_open":        round(float(last.get("today_open",     0)), 4),
+            "price_vs_open_pct": round(
+                (price - float(last.get("today_open", price))) / float(last.get("today_open", price)) * 100, 3
+            ) if float(last.get("today_open", 0)) > 0 else 0.0,
+            "session_high":      round(float(last.get("session_high", price)), 4),
+            "session_high_off_pct": round(
+                (price - float(last.get("session_high", price))) / float(last.get("session_high", price)) * 100, 3
+            ) if float(last.get("session_high", 0)) > 0 else 0.0,
             "first_bar_high": round(float(last.get("first_bar_high", 0)), 4),
             "first_bar_low":  round(float(last.get("first_bar_low",  0)), 4),
             "gap_holding":    bool(price >= float(last.get("today_open", 0)))

@@ -224,6 +224,68 @@ class PositionsMixin:
         self.database.remove_position(symbol)
         self.gfv_tracker.remove_buy(symbol)
 
+    def check_early_failure_exits(self, positions_snapshot: list[dict]) -> dict[str, str]:
+        """Return positions that failed quickly before the full time stop.
+
+        A new trade must start working toward breakeven soon. If it is old enough
+        to judge, red beyond the small failure threshold, and still showing weak
+        intraday structure, exit instead of waiting for the 60-minute stop.
+        """
+        to_exit = {}
+
+        for pos in positions_snapshot:
+            if pos.get("trailing"):
+                continue
+            entry_ts_str = pos.get("entry_ts", "")
+            if not entry_ts_str:
+                continue
+            try:
+                entry_dt = datetime.fromisoformat(entry_ts_str)
+                if entry_dt.tzinfo is None:
+                    entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+
+            age_minutes = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 60
+            if age_minutes < config.EARLY_FAILURE_MINUTES:
+                continue
+            if float(pos.get("pnl_pct", 0.0)) > config.EARLY_FAILURE_MAX_RED_PCT:
+                continue
+
+            sym = pos["symbol"]
+            try:
+                df = self.broker.get_bars(sym, "5Min", days=2)
+                df = self.indicators.compute_indicators(df)
+                sig = self.indicators.get_signal_summary(df) if not df.empty else {}
+            except Exception as exc:
+                log.warning("Early failure check skipped for %s: indicator fetch failed: %s", sym, exc)
+                continue
+
+            current = float(pos.get("current_price", 0) or 0)
+            vwap = float(sig.get("vwap") or 0)
+            ema9 = float(sig.get("ema9") or 0)
+            ema21 = float(sig.get("ema21") or 0)
+            price_vs_3ago = float(sig.get("price_vs_3bars_ago") or 0)
+            bars_rising = int(sig.get("bars_rising_3") or 0)
+
+            below_vwap = vwap > 0 and current < vwap
+            ema_failed = ema9 > 0 and ema21 > 0 and ema9 < ema21
+            weak_momentum = (
+                price_vs_3ago < config.EARLY_FAILURE_MIN_15M_MOMENTUM
+                and bars_rising < 2
+            )
+
+            if below_vwap or ema_failed or weak_momentum:
+                reason = (
+                    f"Early failure: open {age_minutes:.0f} min, pnl={pos.get('pnl_pct', 0):.2f}%, "
+                    f"below_vwap={below_vwap}, ema_failed={ema_failed}, "
+                    f"15m={price_vs_3ago:+.2f}%, bars={bars_rising}/3"
+                )
+                log.warning("%s  exiting", reason)
+                to_exit[sym] = reason
+
+        return to_exit
+
     def check_time_stops(self, positions_snapshot: list[dict]) -> list[str]:
         """Return symbols that exceeded the configured time stop without enough TP progress.
 
@@ -341,6 +403,42 @@ class PositionsMixin:
             log.info("Session overrides: %s", self.session_overrides.summary())
 
         return False
+
+    def _execute_early_failure_exits(self, positions_snapshot: list[dict], equity: float) -> set[str]:
+        """Close positions that fail quickly before the full time-stop window."""
+        early_exits = self.check_early_failure_exits(positions_snapshot)
+        closed = set()
+        for sym, reason in early_exits.items():
+            gfv_safe, gfv_reason = self.gfv_tracker.gfv_safe_to_sell(sym)
+            pos_data = next((p for p in positions_snapshot if p["symbol"] == sym), {})
+            qty = float(pos_data.get("qty", 0))
+            pnl = float(pos_data.get("pnl", 0))
+            if not gfv_safe:
+                log.warning("Early failure exit blocked by GFV for %s: %s", sym, gfv_reason)
+                continue
+            self.broker.cancel_orders_for_symbol(sym)
+            if not self.broker.close_position(sym):
+                continue
+            with self._state_lock:
+                self._daily_pnl += pnl
+            self.database.record_decision(
+                sym, "SELL", pos_data.get("current_price"), qty,
+                pnl=pnl, setup_type=pos_data.get("setup_type"),
+                reasoning=reason)
+            self.database.remove_position(sym)
+            self.gfv_tracker.remove_buy(sym)
+            self.database.update_outcome(
+                sym, "win" if pnl > 0 else "loss" if pnl < 0 else "breakeven", pnl)
+            self.notifier.send_trade_alert(
+                action="SELL", symbol=sym,
+                price=float(pos_data.get("current_price") or 0), qty=qty,
+                equity=equity, daily_pnl=self._daily_pnl,
+                deployed=self._deployed_today,
+                positions_open=max(0, len(positions_snapshot) - 1),
+                pnl=pnl, setup_type="early_failure",
+                reason=reason)
+            closed.add(sym)
+        return closed
 
     def _execute_time_stop_exits(self, positions_snapshot: list[dict], equity: float) -> None:
         """Place market sells for symbols returned by check_time_stops when GFV allows.
@@ -550,6 +648,10 @@ class PositionsMixin:
                         "realized=%.0f unrealized=%.0f)",
                         effective_daily_pnl, abs(effective_daily_pnl / equity * 100),
                         self._daily_pnl, unrealized_pnl)
+
+        early_closed = self._execute_early_failure_exits(positions_snapshot, equity)
+        if early_closed:
+            positions_snapshot = self.build_positions_snapshot()
 
         self._execute_time_stop_exits(positions_snapshot, equity)
         self._execute_partial_profit_exits(positions_snapshot, equity)

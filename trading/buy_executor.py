@@ -104,19 +104,20 @@ class BuyExecutorMixin:
             return None
 
         setup_type_hint = d.get("setup_type") or d.get("setup_type_hint") or ""
-        if suppressed_setups and setup_type_hint and setup_type_hint in suppressed_setups:
+        _suppression_key = setup_type_hint or "momentum"
+        if suppressed_setups and _suppression_key in suppressed_setups:
             self._record_buy_skip(
                 symbol,
                 d.get("entry_price"),
-                suppressed_setups[setup_type_hint],
+                suppressed_setups[_suppression_key],
                 signal_score,
                 "SETUP_SUPPRESSED",
             )
             log.info(
                 "SETUP SUPPRESSED %s [%s]: %s",
                 symbol,
-                setup_type_hint,
-                suppressed_setups[setup_type_hint][:80],
+                _suppression_key,
+                suppressed_setups[_suppression_key][:80],
             )
             return None
 
@@ -341,6 +342,17 @@ class BuyExecutorMixin:
             self._record_buy_skip(symbol, price, "qty=0 after vol-adjusted sizing", signal_score, "QTY_ZERO")
             return None
 
+        if config.MIN_POSITION_SIZE > 0 and qty * price < config.MIN_POSITION_SIZE:
+            self._record_buy_skip(
+                symbol, price,
+                f"Micro-position: ${qty * price:.0f} < ${config.MIN_POSITION_SIZE:.0f} minimum  "
+                f"trade slot wasted on {qty:.0f} share(s) — skipping",
+                signal_score, "QTY_ZERO",
+            )
+            log.info("MIN POSITION SIZE veto %s: $%.0f < $%.0f floor (%g shares)",
+                     symbol, qty * price, config.MIN_POSITION_SIZE, qty)
+            return None
+
         new_risk = (price - stop_loss) * qty if stop_loss else 0
         heat_ok, heat_reason = self.risk_manager.check_portfolio_heat(
             positions_snapshot, new_risk, equity
@@ -392,6 +404,7 @@ class BuyExecutorMixin:
 
         return {
             "cur_min": cur_min,
+            "in_early": in_early,
             "gap_go": gap_go,
             "vwap_reclaim": vwap_reclaim,
             "vol_floor": vol_floor,
@@ -456,6 +469,16 @@ class BuyExecutorMixin:
             log.info("Late-day gate: no new entries after 3:45 ET - skip %s", symbol)
             return None
 
+        minutes_to_close = close_min - gate_ctx["cur_min"]
+        if minutes_to_close < config.MIN_ENTRY_RUNWAY_MINUTES:
+            reason = (
+                f"Runway gate: only {minutes_to_close} min before EOD close; "
+                f"need >= {config.MIN_ENTRY_RUNWAY_MINUTES} min so breakeven/time-stop logic can work"
+            )
+            self._record_buy_skip(symbol, price, reason, signal_score, "RUNWAY_GATE")
+            log.info("RUNWAY gate %s: %d min to EOD close - skipping", symbol, minutes_to_close)
+            return None
+
         if gate_ctx["cur_min"] > prime_end:
             decision_conf = int(d.get("signal_confidence") or d.get("confidence") or 0)
             if signal_score < config.MIDDAY_ENTRY_MIN_SCORE or decision_conf < config.MIDDAY_ENTRY_MIN_CONF:
@@ -500,6 +523,44 @@ class BuyExecutorMixin:
                      symbol, _bars_rising, _price_vs_3ago)
             return None
 
+        breakeven_move_pct = config.BREAKEVEN_TRIGGER_PCT * 100
+        required_15m_pct = breakeven_move_pct * config.BREAKEVEN_FEASIBILITY_MULTIPLIER
+        trend_can_reach_be = (
+            _last_bullish
+            and _bars_rising >= 2
+            and _price_vs_3ago >= required_15m_pct
+        )
+        breakout_can_reach_be = (
+            bool(sig.get("above_orb_30", False))
+            or (
+                bool(sig.get("above_first_bar_high", False))
+                and _price_vs_3ago >= breakeven_move_pct
+            )
+        )
+        vwap_can_reach_be = (
+            _vwap_reclaim
+            and bool(sig.get("above_vwap", False))
+            and vol_ratio >= 1.0
+        )
+        gap_can_reach_be = (
+            _gap_go
+            and _last_bullish
+            and _price_vs_3ago >= breakeven_move_pct
+        )
+        if not any((trend_can_reach_be, breakout_can_reach_be, vwap_can_reach_be, gap_can_reach_be)):
+            reason = (
+                f"Breakeven feasibility gate: needs realistic path to +{breakeven_move_pct:.2f}% "
+                f"protection trigger; 15m={_price_vs_3ago:+.2f}% "
+                f"(need {required_15m_pct:.2f}% trend), bars={_bars_rising}/3, "
+                f"vwap_reclaim={_vwap_reclaim}, breakout={bool(sig.get('above_orb_30', False))}"
+            )
+            self._record_buy_skip(symbol, price, reason, signal_score, "BREAKEVEN_FEASIBILITY")
+            log.info(
+                "BREAKEVEN feasibility gate %s: 15m=%+.2f%% bars=%d/3 last_bullish=%s",
+                symbol, _price_vs_3ago, _bars_rising, _last_bullish,
+            )
+            return None
+
         # Hard extension gate: block outright chasing.
         # The score already penalises extension; this veto prevents a high raw score
         # from overriding the warning when price is too far above EMA21.
@@ -511,6 +572,30 @@ class BuyExecutorMixin:
                           f"(max {config.MAX_EMA21_EXTENSION_PCT:.1%})  chasing, pullback risk")
                 self._record_buy_skip(symbol, price, reason, signal_score, "EXTENSION_GATE")
                 log.info("EXTENSION gate %s: %.1f%% above EMA21 - blocking chase entry", symbol, _ext_pct * 100)
+                return None
+
+        # Opening-thrust staleness gates — early window only, exempt gap_go + vwap_reclaim.
+        # Gate 1: price too far above today's open → opening move already done, chasing.
+        # Gate 2: price already fading from session high → missed the peak, entering a pullback.
+        if gate_ctx["in_early"] and not gate_ctx["gap_go"] and not gate_ctx["vwap_reclaim"]:
+            _price_vs_open = float(sig.get("price_vs_open_pct", 0.0))
+            if _price_vs_open > config.EARLY_THRUST_MAX_OPEN_PCT:
+                reason = (
+                    f"Opening thrust gate: price {_price_vs_open:.2f}% above today's open "
+                    f"(max {config.EARLY_THRUST_MAX_OPEN_PCT:.2f}%)  opening move done, wait for pullback"
+                )
+                self._record_buy_skip(symbol, price, reason, signal_score, "OPENING_THRUST_GATE")
+                log.info("OPENING THRUST gate %s: %.2f%% above open - late entry", symbol, _price_vs_open)
+                return None
+
+            _off_high = float(sig.get("session_high_off_pct", 0.0))
+            if _off_high < config.EARLY_THRUST_MAX_OFF_HIGH:
+                reason = (
+                    f"Session fade gate: price {_off_high:.2f}% below session high "
+                    f"(max {config.EARLY_THRUST_MAX_OFF_HIGH:.2f}%)  already fading from peak, wait for base"
+                )
+                self._record_buy_skip(symbol, price, reason, signal_score, "SESSION_FADE_GATE")
+                log.info("SESSION FADE gate %s: %.2f%% off session high - entering pullback", symbol, _off_high)
                 return None
 
         _posture       = (self._daily_plan or {}).get("risk_posture", "normal")
@@ -838,4 +923,3 @@ class BuyExecutorMixin:
             reason_entry,
             setup_type_hint,
         )
-

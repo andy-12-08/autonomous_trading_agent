@@ -456,6 +456,10 @@ class TradeCycleMixin:
         dyn_conf_bar      = self.expectancy_engine.compute_dynamic_confidence_bar(recent_decisions)
         cooling_symbols   = self.expectancy_engine.get_cooling_symbols(recent_decisions)
         suppressed_setups = self.expectancy_engine.get_suppressed_setups(recent_decisions)
+        fast_brake = self.expectancy_engine.get_timestop_brake(recent_decisions)
+        if fast_brake and "momentum" not in suppressed_setups:
+            suppressed_setups["momentum"] = fast_brake
+            log.warning("FAST BRAKE active: %s", fast_brake)
         if cooling_symbols:
             log.info("Cooling-off symbols: %s", list(cooling_symbols.keys()))
         if suppressed_setups:
