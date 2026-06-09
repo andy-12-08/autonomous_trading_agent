@@ -280,13 +280,12 @@ class SignalScorer(SignalRulesMixin):
                          regime: str = "ranging",
                          session_overrides=None) -> list[dict]:
         """
-        Score every symbol across all four setup types and drop anything below
+        Score every symbol across trend-following setup types and drop anything below
         the quality threshold.
 
         Scorers run in parallel; the highest valid score wins:
           gap_and_go     ORB breakout with gap (9:3511:00 ET only)
-          vwap_reclaim   mean-reversion: price reclaims VWAP from below
-          mean_reversion  price below POC inside value area, reverting to mean
+          vwap_reclaim   buyers reclaim VWAP from below and confirm upward continuation
           momentum       EMA/MACD/volume trend-following (always active)
 
         The minimum qualifying score is read from session_overrides when provided,
@@ -332,13 +331,12 @@ class SignalScorer(SignalRulesMixin):
             mom_score,  mom_ev  = SignalScorer.score_setup(sig, bias_15, bias_day)
             gap_score,  gap_ev  = SignalScorer.score_gap_and_go(sig)
             vwap_score, vwap_ev = SignalScorer.score_vwap_reclaim(sig)
-            mr_score,   mr_ev   = SignalScorer.score_mean_reversion(sig)
-
-            # Pick the strongest valid setup this bar
+            # Pick the strongest valid trend-following setup this bar.
+            # POC mean-reversion is intentionally excluded: this bot is designed
+            # to buy confirmed upward continuation, not fair-value reversion.
             candidates = [
                 (gap_score,  gap_ev,  "gap_and_go"),
                 (vwap_score, vwap_ev, "vwap_reclaim"),
-                (mr_score,   mr_ev,   "mean_reversion"),
                 (mom_score,  mom_ev,  "momentum"),
             ]
             best_score, best_ev, best_type = max(candidates, key=lambda x: x[0])

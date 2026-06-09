@@ -48,17 +48,27 @@ class PositionsMixin:
             take_profit = db.get("take_profit", round(entry_price * (1 + config.DEFAULT_TAKE_PROFIT_PCT), 2))
             trailing    = bool(db.get("trailing", False))
             stop_updated = False
+            highest_price = max(float(db.get("highest_price") or entry_price or current_price), current_price)
+            lowest_price = min(float(db.get("lowest_price") or entry_price or current_price), current_price)
+            if db:
+                self.database.save_position(
+                    symbol, entry_price, qty, stop_loss, take_profit,
+                    trailing=trailing, highest_price=highest_price,
+                    lowest_price=lowest_price,
+                    partial_taken=bool(db.get("partial_taken", False)),
+                    entry_ts=db.get("entry_ts", ""),
+                    setup_type=db.get("setup_type"))
 
             # -- Step-trailing stop --------------------------------------------
             # Phase 1 (breakeven): price = entry + BREAKEVEN_TRIGGER_PCT ?
-            #   stop = entry  (1 - BREAKEVEN_STOP_BUFFER), trailing = True
+            #   stop = entry + BREAKEVEN_STOP_BUFFER, trailing = True
             # Phase 2 (step-trail): while price = stop  (1 + TRAIL_STEP_TRIGGER_PCT),
             #   step stop up by TRAIL_STEP_SIZE_PCT.  Loop catches price jumps.
             _gain_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
 
             if entry_price > 0 and not trailing:
                 if _gain_pct >= config.BREAKEVEN_TRIGGER_PCT:
-                    breakeven_stop = round(entry_price * (1 - config.BREAKEVEN_STOP_BUFFER), 2)
+                    breakeven_stop = round(entry_price * (1 + config.BREAKEVEN_STOP_BUFFER), 2)
                     if stop_loss >= breakeven_stop:
                         # Stop already at or above the breakeven level (e.g. from a prior
                         # session or manual update)  arm step-trailing without moving stop down.
@@ -94,7 +104,7 @@ class PositionsMixin:
                                     f"Breakeven: price +{_gain_pct:.1%} = "
                                     f"{config.BREAKEVEN_TRIGGER_PCT:.1%} trigger "
                                     f"? stop {breakeven_stop:.2f} "
-                                    f"(entry-{config.BREAKEVEN_STOP_BUFFER:.1%})"
+                                    f"(entry+{config.BREAKEVEN_STOP_BUFFER:.2%})"
                                 ))
 
             elif trailing:
@@ -160,6 +170,8 @@ class PositionsMixin:
                 "gfv_locked":    gfv_locked,
                 "gfv_reason":    gfv_reason,
                 "entry_ts":      db.get("entry_ts", ""),
+                "highest_price": round(highest_price, 4),
+                "lowest_price":  round(lowest_price, 4),
                 "partial_taken": bool(db.get("partial_taken", False)),
                 "setup_type":    db.get("setup_type"),
             })
@@ -184,6 +196,10 @@ class PositionsMixin:
         entry_price = float(db_pos.get("entry_price", 0) or 0)
         qty         = float(db_pos.get("qty",         0) or 0)
         setup_type  = db_pos.get("setup_type")
+        highest_price = float(db_pos.get("highest_price") or entry_price or 0)
+        lowest_price = float(db_pos.get("lowest_price") or entry_price or 0)
+        mfe_pct = ((highest_price - entry_price) / entry_price * 100) if entry_price else 0.0
+        mae_pct = ((lowest_price - entry_price) / entry_price * 100) if entry_price else 0.0
 
         try:
             _bracket_equity = float(self.broker.get_account().equity or config.ACCOUNT_SIZE)
@@ -198,7 +214,10 @@ class PositionsMixin:
             self.database.record_decision(
                 symbol, "SELL", price=fill_price, qty=qty, pnl=pnl,
                 setup_type=setup_type,
-                reasoning="Bracket order triggered (stop-loss or take-profit hit by Alpaca)")
+                reasoning=(
+                    "Bracket order triggered (stop-loss or take-profit hit by Alpaca) | "
+                    f"MFE={mfe_pct:+.2f}% MAE={mae_pct:+.2f}%"
+                ))
             self.database.update_outcome(symbol, outcome, pnl)
             with self._state_lock:
                 self._daily_pnl += pnl
@@ -214,7 +233,10 @@ class PositionsMixin:
             self.database.record_decision(
                 symbol, "SELL", price=entry_price, qty=qty,
                 setup_type=setup_type,
-                reasoning="Bracket order triggered  fill data unavailable")
+                reasoning=(
+                    "Bracket order triggered  fill data unavailable | "
+                    f"MFE={mfe_pct:+.2f}% MAE={mae_pct:+.2f}%"
+                ))
             self.notifier.send_trade_alert(
                 action="SELL", symbol=symbol, price=entry_price, qty=qty,
                 equity=_bracket_equity, daily_pnl=self._daily_pnl,
@@ -262,6 +284,9 @@ class PositionsMixin:
                 continue
 
             current = float(pos.get("current_price", 0) or 0)
+            entry = float(pos.get("entry_price", 0) or 0)
+            highest = float(pos.get("highest_price") or entry or current)
+            mfe_pct = ((highest - entry) / entry * 100) if entry else 0.0
             vwap = float(sig.get("vwap") or 0)
             ema9 = float(sig.get("ema9") or 0)
             ema21 = float(sig.get("ema21") or 0)
@@ -279,7 +304,7 @@ class PositionsMixin:
                 reason = (
                     f"Early failure: open {age_minutes:.0f} min, pnl={pos.get('pnl_pct', 0):.2f}%, "
                     f"below_vwap={below_vwap}, ema_failed={ema_failed}, "
-                    f"15m={price_vs_3ago:+.2f}%, bars={bars_rising}/3"
+                    f"15m={price_vs_3ago:+.2f}%, bars={bars_rising}/3, MFE={mfe_pct:+.2f}%"
                 )
                 log.warning("%s  exiting", reason)
                 to_exit[sym] = reason
@@ -526,6 +551,7 @@ class PositionsMixin:
                 runner_stop, runner_tp,
                 trailing=pos_data.get("trailing", False),
                 highest_price=pos_data.get("current_price"),
+                lowest_price=pos_data.get("lowest_price"),
                 partial_taken=True, entry_ts=pos_data.get("entry_ts", ""))
             if runner_tp != orig_tp:
                 log.info("Runner TP extended: %s orig=%.2f ? runner=%.2f", sym, orig_tp, runner_tp)

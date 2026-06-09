@@ -15,7 +15,8 @@ class IndicatorEngine(PatternsMixin):
         """
         Compute all technical indicators and append them as columns on df.
 
-        Requires at least 20 rows; returns df unchanged if the guard is not met.
+        Requires at least 1 row; short histories still get the core indicator
+        columns, though rolling 20-bar values may be NaN until enough bars exist.
         Mutates df in-place and also returns it for chaining convenience.
 
         Args:
@@ -30,7 +31,7 @@ class IndicatorEngine(PatternsMixin):
               gap_pct, today_open, first_bar_high, first_bar_low,
               orb_30_high, orb_30_low, orb_30_valid, orb_30_width_pct.
         """
-        if df.empty or len(df) < 20:
+        if df.empty:
             return df
 
         close = df["close"]
@@ -309,70 +310,88 @@ class IndicatorEngine(PatternsMixin):
         last = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else last
 
-        orb_30_high  = float(last.get("orb_30_high",  0))
-        orb_30_low   = float(last.get("orb_30_low",   0))
-        orb_30_valid = bool(last.get("orb_30_valid",  False))
-        price        = float(last["close"])
+        def _num(row, key: str, default: float = 0.0) -> float:
+            """Return a finite float from a Series, replacing missing/NaN values."""
+            try:
+                value = float(row.get(key, default))
+            except (TypeError, ValueError):
+                return default
+            return value if np.isfinite(value) else default
+
+        def _flag(row, key: str, default: bool = False) -> bool:
+            value = row.get(key, default)
+            return default if pd.isna(value) else bool(value)
+
+        orb_30_high  = _num(last, "orb_30_high")
+        orb_30_low   = _num(last, "orb_30_low")
+        orb_30_valid = _flag(last, "orb_30_valid")
+        price        = _num(last, "close")
+        today_open   = _num(last, "today_open", price)
+        session_high = _num(last, "session_high", price)
+        first_high   = _num(last, "first_bar_high")
+        first_low    = _num(last, "first_bar_low")
+        vwap         = _num(last, "vwap", price)
+        ema9         = _num(last, "ema9")
+        ema21        = _num(last, "ema21")
+        macd_hist    = _num(last, "macd_hist")
+        prev_macd    = _num(prev, "macd_hist")
 
         return {
             "price":       round(price, 4),
-            "ema9":        round(float(last["ema9"]),  4),
-            "ema21":       round(float(last["ema21"]), 4),
-            "ema50":       round(float(last.get("ema50", 0)), 4),
-            "macd":        round(float(last["macd"]),  4),
-            "macd_hist":   round(float(last["macd_hist"]), 4),
-            "macd_cross":  "bullish" if (last["macd_hist"] > 0 and prev["macd_hist"] <= 0)
-                           else "bearish" if (last["macd_hist"] < 0 and prev["macd_hist"] >= 0)
+            "ema9":        round(ema9,  4),
+            "ema21":       round(ema21, 4),
+            "ema50":       round(_num(last, "ema50"), 4),
+            "macd":        round(_num(last, "macd"),  4),
+            "macd_hist":   round(macd_hist, 4),
+            "macd_cross":  "bullish" if (macd_hist > 0 and prev_macd <= 0)
+                           else "bearish" if (macd_hist < 0 and prev_macd >= 0)
                            else "neutral",
-            "rsi":         round(float(last["rsi"]), 2),
-            "bb_pct":      round(float(last["bb_pct"]), 3),
-            "atr":         round(float(last["atr"]), 4),
-            "vwap":        round(float(last["vwap"]), 4),
-            "vol_ratio":   round(float(last["vol_ratio"]), 2),
-            "mom10":       round(float(last["mom10"]), 3),
-            "above_vwap":  bool(price > float(last["vwap"])),
-            "ema_trend":   "bullish" if last["ema9"] > last["ema21"] else "bearish",
+            "rsi":         round(_num(last, "rsi", 50.0), 2),
+            "bb_pct":      round(_num(last, "bb_pct", 0.5), 3),
+            "atr":         round(_num(last, "atr"), 4),
+            "vwap":        round(vwap, 4),
+            "vol_ratio":   round(_num(last, "vol_ratio", 1.0), 2),
+            "mom10":       round(_num(last, "mom10"), 3),
+            "above_vwap":  bool(price > vwap) if vwap > 0 else False,
+            "ema_trend":   "bullish" if ema9 > ema21 else "bearish",
             # -- Gap / opening range -----------------------------------------------
-            "gap_pct":           round(float(last.get("gap_pct",        0)), 2),
-            "today_open":        round(float(last.get("today_open",     0)), 4),
+            "gap_pct":           round(_num(last, "gap_pct"), 2),
+            "today_open":        round(today_open, 4),
             "price_vs_open_pct": round(
-                (price - float(last.get("today_open", price))) / float(last.get("today_open", price)) * 100, 3
-            ) if float(last.get("today_open", 0)) > 0 else 0.0,
-            "session_high":      round(float(last.get("session_high", price)), 4),
+                (price - today_open) / today_open * 100, 3
+            ) if today_open > 0 else 0.0,
+            "session_high":      round(session_high, 4),
             "session_high_off_pct": round(
-                (price - float(last.get("session_high", price))) / float(last.get("session_high", price)) * 100, 3
-            ) if float(last.get("session_high", 0)) > 0 else 0.0,
-            "first_bar_high": round(float(last.get("first_bar_high", 0)), 4),
-            "first_bar_low":  round(float(last.get("first_bar_low",  0)), 4),
-            "gap_holding":    bool(price >= float(last.get("today_open", 0)))
-                              if last.get("today_open", 0) > 0 else False,
-            "above_first_bar_high": bool(price >= float(last.get("first_bar_high", 0)))
-                                     if last.get("first_bar_high", 0) > 0 else False,
+                (price - session_high) / session_high * 100, 3
+            ) if session_high > 0 else 0.0,
+            "first_bar_high": round(first_high, 4),
+            "first_bar_low":  round(first_low,  4),
+            "gap_holding":    bool(price >= today_open) if today_open > 0 else False,
+            "above_first_bar_high": bool(price >= first_high) if first_high > 0 else False,
             # -- 30-minute Opening Range Breakout ----------------------------------
             # orb_30_valid = True only after all 6 opening bars (10:00 ET) are recorded.
             # above_orb_30 = price cleared the institutional range  primary ORB signal.
             "orb_30_high":      round(orb_30_high, 4),
             "orb_30_low":       round(orb_30_low,  4),
             "orb_30_valid":     orb_30_valid,
-            "orb_30_width_pct": round(float(last.get("orb_30_width_pct", 0)), 3),
+            "orb_30_width_pct": round(_num(last, "orb_30_width_pct"), 3),
             "above_orb_30":     bool(price > orb_30_high) if (orb_30_valid and orb_30_high > 0) else False,
             # -- VWAP reclaim ------------------------------------------------------
             # True when price crossed back above VWAP this bar after being below it.
-            "vwap_cross_up":   bool(last.get("vwap_cross_up", False)),
+            "vwap_cross_up":   _flag(last, "vwap_cross_up"),
             # Volume on the bar BEFORE the current one  used to detect single-candle
             # volume spikes vs sustained buying pressure on VWAP reclaim setups.
-            "prev_vol_ratio":  round(float(prev.get("vol_ratio", 1.0)), 2),
+            "prev_vol_ratio":  round(_num(prev, "vol_ratio", 1.0), 2),
             # -- Short-term price direction (entry momentum) -----------------------
             # last_bar_bullish: most recent 5-min candle closed above its open (green bar).
             # bars_rising_3: how many of the last 3 bars are green (0-3).
             # price_vs_3bars_ago: % change vs 15 min ago — positive = actively climbing.
-            "last_bar_bullish": bool(float(last["close"]) > float(last["open"]))
-                                 if "open" in last.index else False,
+            "last_bar_bullish": bool(price > _num(last, "open", price)),
             "bars_rising_3": int(sum(
                 1 for i in range(-3, 0)
-                if len(df) >= abs(i) and float(df.iloc[i]["close"]) > float(df.iloc[i]["open"])
+                if len(df) >= abs(i) and _num(df.iloc[i], "close") > _num(df.iloc[i], "open")
             )),
             "price_vs_3bars_ago": round(
-                (float(last["close"]) - float(df.iloc[-4]["close"])) / float(df.iloc[-4]["close"]) * 100, 3
-            ) if len(df) >= 4 else 0.0,
+                (price - _num(df.iloc[-4], "close")) / _num(df.iloc[-4], "close") * 100, 3
+            ) if len(df) >= 4 and _num(df.iloc[-4], "close") > 0 else 0.0,
         }

@@ -20,6 +20,25 @@ from core.database import log
 class MarketDataMixin:
     """Bars, quotes, snapshots, asset lists, fills, and news for AlpacaBroker."""
 
+    def _run_data_call_with_timeout(self, label: str, fn, timeout_s: int):
+        """Run a market-data request with a wall-clock cap.
+
+        Alpaca's SDK can occasionally block longer than the HTTP timeout while
+        building or decoding a response. Final BUY validation uses single-symbol
+        data calls, so fail closed there instead of letting one candidate stall
+        the whole scan.
+        """
+        pool = _cf.ThreadPoolExecutor(max_workers=1)
+        fut = pool.submit(fn)
+        try:
+            return fut.result(timeout=timeout_s)
+        except _cf.TimeoutError:
+            log.warning("%s timed out after %ds", label, timeout_s)
+            fut.cancel()
+            return None
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
     def get_bars(self, symbol: str, timeframe: str = "5Min", days: int = 5) -> pd.DataFrame:
         """Fetch OHLCV bar data for a single symbol.
 
@@ -49,8 +68,17 @@ class MarketDataMixin:
             end=end,
             feed="iex",
         )
+        def _fetch():
+            return self._data_client.get_stock_bars(req)
+
         try:
-            bars = self._data_client.get_stock_bars(req)
+            bars = self._run_data_call_with_timeout(
+                f"get_bars {symbol} {timeframe}",
+                _fetch,
+                config.SINGLE_BARS_TIMEOUT_SECONDS,
+            )
+            if bars is None:
+                return pd.DataFrame()
             df = bars.df
             if isinstance(df.index, pd.MultiIndex):
                 df = df.xs(symbol, level=0)
@@ -91,8 +119,8 @@ class MarketDataMixin:
         end   = datetime.now(config.ET)
         start = end - timedelta(days=days)
 
-        _BATCH_SIZE    = 25   # symbols per request  keeps IEX response time <15 s
-        _BATCH_TIMEOUT = 30   # per-batch wall-clock limit
+        _BATCH_SIZE    = int(getattr(config, "BARS_MULTI_BATCH_SIZE", 20))
+        _BATCH_TIMEOUT = int(getattr(config, "BARS_MULTI_TIMEOUT_SECONDS", 25))
         batches = [symbols[i:i + _BATCH_SIZE] for i in range(0, len(symbols), _BATCH_SIZE)]
 
         def _fetch_batch(batch: list[str]):
@@ -117,11 +145,15 @@ class MarketDataMixin:
         timed_out = 0
         failed    = 0
 
-        with _cf.ThreadPoolExecutor(max_workers=len(batches)) as pool:
-            futures = {pool.submit(_fetch_batch, b): b for b in batches}
-            for fut, batch in futures.items():
+        pool = _cf.ThreadPoolExecutor(max_workers=len(batches))
+        futures = {pool.submit(_fetch_batch, b): b for b in batches}
+        completed = set()
+        try:
+            for fut in _cf.as_completed(futures, timeout=_BATCH_TIMEOUT):
+                completed.add(fut)
+                batch = futures[fut]
                 try:
-                    bars, batch = fut.result(timeout=_BATCH_TIMEOUT)
+                    bars, batch = fut.result(timeout=0)
                     df_all = bars.df
                     if isinstance(df_all.index, pd.MultiIndex):
                         for sym in batch:
@@ -133,14 +165,21 @@ class MarketDataMixin:
                                 pass
                     elif not df_all.empty and len(batch) == 1:
                         result[batch[0]] = df_all.sort_index()
-                except _cf.TimeoutError:
-                    timed_out += 1
-                    log.warning("get_bars_multi batch timed out (%d symbols, %s)  skipping",
-                                len(batch), timeframe)
                 except Exception as e:
                     failed += 1
                     log.warning("get_bars_multi batch failed (%d symbols, %s): %s",
                                 len(batch), timeframe, e)
+        except _cf.TimeoutError:
+            pass
+        finally:
+            pending = [f for f in futures if f not in completed]
+            timed_out += len(pending)
+            for fut in pending:
+                batch = futures[fut]
+                log.warning("get_bars_multi batch timed out (%d symbols, %s)  skipping",
+                            len(batch), timeframe)
+                fut.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
 
         total = len(batches)
         if timed_out or failed:
@@ -178,8 +217,18 @@ class MarketDataMixin:
             quote is missing, invalid, or fails sanity checks.
         """
         try:
-            req  = StockLatestQuoteRequest(symbol_or_symbols=symbol)
-            resp = self._data_client.get_stock_latest_quote(req)
+            req = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+
+            def _fetch():
+                return self._data_client.get_stock_latest_quote(req)
+
+            resp = self._run_data_call_with_timeout(
+                f"get_latest_quote {symbol}",
+                _fetch,
+                config.LATEST_QUOTE_TIMEOUT_SECONDS,
+            )
+            if resp is None:
+                return None
             quote = resp[symbol]
             bid = float(quote.bid_price or 0)
             ask = float(quote.ask_price or 0)
@@ -328,7 +377,14 @@ class MarketDataMixin:
         result: dict[str, dict] = {}
 
         _SNAP_TIMEOUT = 30
+        _MAX_SECONDS  = getattr(config, "SNAPSHOT_SCREEN_MAX_SECONDS", 90)
+        _started      = time.monotonic()
         for i in range(0, len(symbols), BATCH):
+            if time.monotonic() - _started >= _MAX_SECONDS:
+                log.warning(
+                    "Snapshot screen budget exhausted after %.1fs  using partial data (%d/%d symbols)",
+                    time.monotonic() - _started, len(result), len(symbols))
+                break
             batch = symbols[i : i + BATCH]
             req   = StockSnapshotRequest(symbol_or_symbols=batch, feed="iex")
             _pool = _cf.ThreadPoolExecutor(max_workers=1)

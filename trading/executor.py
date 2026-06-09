@@ -67,6 +67,7 @@ class ExecutorMixin(BuyExecutorMixin):
                 runner_stop, runner_tp,
                 trailing=pos_data.get("trailing", False),
                 highest_price=pos_data.get("current_price"),
+                lowest_price=pos_data.get("lowest_price"),
                 partial_taken=True, entry_ts=pos_data.get("entry_ts", ""))
             # Resubmit broker protection for the runner  cancel stale bracket legs
             # (sized for old qty) then place a fresh bracket for the remaining shares.

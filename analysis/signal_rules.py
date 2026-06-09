@@ -118,10 +118,11 @@ class SignalRulesMixin:
     @staticmethod
     def score_vwap_reclaim(sig: dict) -> tuple[float, list[str]]:
         """
-        Score a VWAP reclaim (mean-reversion) setup.
+        Score a VWAP reclaim continuation setup.
 
         Institutional logic:
           - Sellers pushed price below VWAP; buyers reclaim it with volume.
+          - The long entry is the reclaim/follow-through, not a blind dip buy.
           - Stop: just below VWAP (if it falls back, thesis is dead).
           - Target: prior high, next resistance, or ORB-30 high.
           - Valid all day  not time-limited like gap-and-go.
@@ -280,4 +281,3 @@ class SignalRulesMixin:
             score += 0.5; ev.append("+0.5 EMA9>EMA21  pullback in uptrend, with-trend reversion")
 
         return round(max(0.0, min(10.0, score)), 1), ev
-

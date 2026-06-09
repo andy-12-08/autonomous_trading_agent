@@ -281,10 +281,12 @@ class TradeCycleMixin:
                 pre_vetoed.append((sym, f"cooling: {cooling_symbols[sym]}"))
                 continue
 
-            # 15-min alignment gate  momentum and gap_and_go setups require the
-            # 15-min timeframe to be fully bullish (EMA + VWAP + MACD all positive).
+            # 15-min alignment gate  momentum and gap_and_go setups normally require
+            # the 15-min timeframe to be fully bullish (EMA + VWAP + MACD all positive).
             # Mean-reversion and vwap_reclaim setups are exempt: they work precisely
             # because price is NOT yet aligned on the higher timeframe.
+            # Elite exception: a 9.5+ setup may pass at 2/3 only when 15-min EMA and
+            # VWAP are bullish; the lone missing signal must be MACD confirmation.
             # Exception: gap_and_go setups with gap >= GAP_AND_GO_MIN_PCT and above_vwap
             # skip the 15-min gate — the first 15-min bar doesn't close until 9:45 so
             # requiring full alignment blocks all early gap entries. The extension gate,
@@ -292,14 +294,28 @@ class TradeCycleMixin:
             setup_hint = item.get("setup_type_hint", "momentum")
             if setup_hint in ("momentum", "gap_and_go"):
                 b15    = item.get("bias_15min") or {}
-                bull15 = sum([bool(b15.get("ema_bull")),
-                              bool(b15.get("above_vwap")),
-                              bool(b15.get("macd_bull"))])
+                ema15_bull  = bool(b15.get("ema_bull"))
+                vwap15_bull = bool(b15.get("above_vwap"))
+                macd15_bull = bool(b15.get("macd_bull"))
+                bull15 = sum([ema15_bull, vwap15_bull, macd15_bull])
                 ind        = item.get("indicators", {})
                 gap_pct    = float(ind.get("gap_pct", 0))
                 above_vwap = bool(ind.get("above_vwap", False))
+                score      = float(item.get("signal_score", 0))
+                elite_macd_lag = (
+                    score >= config.ELITE_15MIN_GATE_MIN_SCORE
+                    and bull15 == 2
+                    and ema15_bull
+                    and vwap15_bull
+                    and not macd15_bull
+                )
                 if setup_hint == "gap_and_go" and gap_pct >= config.GAP_AND_GO_MIN_PCT and above_vwap:
                     pass  # exempt: extension/spread/ATR gates handle quality in buy_executor
+                elif elite_macd_lag:
+                    log.info(
+                        "15min gate elite pass %s: score=%.1f 15m=2/3 "
+                        "(EMA+VWAP bullish, MACD lagging)",
+                        sym, score)
                 elif bull15 < 3:
                     pre_vetoed.append((sym,
                         f"15min gate: {bull15}/3 bullish  momentum entries require full 15-min alignment"))

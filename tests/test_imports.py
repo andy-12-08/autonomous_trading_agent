@@ -1,4 +1,11 @@
 """Full validation  no orders placed."""
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import config
 from core.database import Database
 from risk.manager import RiskManager as rm
@@ -76,12 +83,15 @@ assert qty_extreme <= qty_normal, f"Extreme vol should reduce qty: {qty_extreme}
 print(f"ATR-adjusted sizing: normal_qty={qty_normal}  extreme_qty={qty_extreme}")
 
 # -- exposure cap --------------------------------------------------------------
+equity = 10000
+cost = 185 * 5
+deployed_near_cap = equity * config.MAX_TOTAL_EXPOSURE_PCT - cost + 1
 ok_exp, _ = rm.approve_buy("AAPL", 185, 5, 181,
-    settled_cash=4000, deployed_today=2900, num_positions=1,
-    daily_pnl=0, total_equity=10000, trades_today=0,
+    settled_cash=4000, deployed_today=deployed_near_cap, num_positions=1,
+    daily_pnl=0, total_equity=equity, trades_today=0,
     reward_to_risk=2.5, signal_confidence=8, vol_ratio=1.5, rsi=52)
-assert not ok_exp, "2900 + 925 > exposure cap  should be vetoed"
-print(f"Exposure cap: correctly vetoed at $2900 deployed")
+assert not ok_exp, "Configured exposure cap should be vetoed when next buy exceeds it"
+print(f"Exposure cap: correctly vetoed near {config.MAX_TOTAL_EXPOSURE_PCT:.0%} deployed")
 
 # -- expectancy tracker --------------------------------------------------------
 fake_decisions = [

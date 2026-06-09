@@ -287,8 +287,10 @@ class RiskManager:
         If key_levels provides a resistance level 15% above entry that gives R:R >= 2,
         use that level (minus 0.2% buffer) as TP  exits before the wall, not into it.
         """
-        atr           = atr or price * 0.01
-        stop_distance = max(atr * 1.5, price * config.DEFAULT_STOP_LOSS_PCT)
+        atr = atr or price * config.DEFAULT_STOP_LOSS_PCT
+        raw_stop_distance = max(atr * config.ATR_STOP_MULTIPLIER,
+                                price * config.SCALP_MIN_STOP_PCT)
+        stop_distance = min(raw_stop_distance, price * config.SCALP_MAX_STOP_PCT)
         stop          = round(price - stop_distance, 2)
         atr_tp        = round(price + max(stop_distance * config.MIN_REWARD_TO_RISK,
                                           price * config.DEFAULT_TAKE_PROFIT_PCT), 2)

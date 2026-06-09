@@ -21,6 +21,11 @@ Sections:
 import sys
 import traceback
 from datetime import datetime, timezone, timedelta, date
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 PASS = "\033[92m[PASS]\033[0m"
 FAIL = "\033[91m[FAIL]\033[0m"
@@ -169,7 +174,7 @@ from risk.manager import RiskManager as rm
 
 def rm_check(name, expected_ok, **kwargs):
     defaults = dict(
-        symbol="TEST", price=100.0, qty=3, stop_loss=97.0,
+        symbol="TEST", price=100.0, qty=6, stop_loss=97.0,
         settled_cash=5000.0, deployed_today=0.0, num_positions=0,
         daily_pnl=0.0, total_equity=10000.0, trades_today=0,
         reward_to_risk=2.5, signal_confidence=7, vol_ratio=1.5, rsi=55.0,
@@ -183,11 +188,11 @@ def rm_check(name, expected_ok, **kwargs):
     return passed
 
 rm_check("baseline approval",                True)
-rm_check("daily drawdown hit",               False, daily_pnl=-210.0)
-rm_check("exposure cap",                     False, deployed_today=4100.0)
+rm_check("daily drawdown hit",               False, daily_pnl=-config.DAILY_DRAWDOWN_LIMIT)
+rm_check("exposure cap",                     False, deployed_today=7500.0)
 rm_check("settled cash too low",             False, settled_cash=50.0)
 rm_check("too many positions (>4)",          False, num_positions=4)
-rm_check("R:R below 2.0",                   False, reward_to_risk=1.5)
+rm_check("R:R below configured minimum",     False, reward_to_risk=config.MIN_REWARD_TO_RISK - 0.1)
 rm_check("confidence below floor",           False, signal_confidence=5)
 rm_check("volume too low",                   False, vol_ratio=0.7)
 rm_check("spread too wide",                  False, spread_pct=0.005)
@@ -217,9 +222,10 @@ def test_sl_tp():
     assert sl is not None and sl < 100.0, f"SL should be below price, got {sl}"
     assert tp is not None and tp > 100.0, f"TP should be above price, got {tp}"
     rr = (tp - 100.0) / (100.0 - sl)
-    assert rr >= 2.0, f"R:R should be >= 2.0, got {rr:.2f}"
+    assert rr >= config.MIN_REWARD_TO_RISK, \
+        f"R:R should be >= {config.MIN_REWARD_TO_RISK}, got {rr:.2f}"
     return f"SL={sl:.2f} TP={tp:.2f} RR={rr:.2f}"
-check("rm.compute_stop_take_profit RR>=2.0", test_sl_tp)
+check("rm.compute_stop_take_profit respects configured RR", test_sl_tp)
 
 # -------------------------------------------------------------
 # 4. SIGNAL SCORER
@@ -231,13 +237,13 @@ def test_score_floor():
     assert config.MIN_SIGNAL_SCORE_TO_AI == 5.0, \
         f"Expected 5.0, got {config.MIN_SIGNAL_SCORE_TO_AI}"
     return f"MIN_SIGNAL_SCORE_TO_AI={config.MIN_SIGNAL_SCORE_TO_AI}"
-check("signal score gate is 6.0", test_score_floor)
+check("signal score gate matches config", test_score_floor)
 
 def test_momentum_score():
     sig = {
         "price": 100.0, "ema9": 98.0, "ema21": 96.0, "ema50": 92.0,
         "macd_hist": 0.5, "rsi": 58.0, "above_vwap": True, "vol_ratio": 1.8,
-        "ema_bull": True, "macd_bull": True,
+        "atr": 1.0, "mom10": 0.8, "ema_bull": True, "macd_bull": True,
         "rs_vs_spy": 0.8, "in_discount_zone": True, "near_bull_fvg": True,
     }
     score, ev = scorer.score_setup(sig, {}, {})
@@ -349,6 +355,17 @@ def test_compute_indicators_runs():
     assert not missing, f"Missing indicator columns: {missing}"
     return f"all {len(required)} required columns present"
 check("compute_indicators produces all required columns", test_compute_indicators_runs)
+
+def test_compute_indicators_short_history_has_core_columns():
+    df = make_df(8)
+    df_out = ind.compute_indicators(df)
+    required = ["ema9", "ema21", "rsi", "macd", "atr", "vwap"]
+    missing = [c for c in required if c not in df_out.columns]
+    assert not missing, f"Missing short-history indicator columns: {missing}"
+    sig = ind.get_signal_summary(df_out)
+    assert "atr" in sig, "short-history signal summary must include atr"
+    return f"short-history columns present, atr={sig['atr']}"
+check("compute_indicators handles short opening history", test_compute_indicators_short_history_has_core_columns)
 
 def test_get_key_levels():
     df = make_df(60)
@@ -728,4 +745,5 @@ if failed:
             print(f"    {FAIL} {name}")
             print(f"           {msg}")
 
-sys.exit(0 if failed == 0 else 1)
+if __name__ == "__main__":
+    sys.exit(0 if failed == 0 else 1)

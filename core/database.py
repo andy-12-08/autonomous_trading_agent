@@ -89,6 +89,7 @@ class Database:
                 entry_ts      TEXT,
                 trailing      INTEGER DEFAULT 0,
                 highest_price REAL,
+                lowest_price  REAL,
                 partial_taken INTEGER DEFAULT 0,
                 setup_type    TEXT
             )
@@ -96,6 +97,7 @@ class Database:
         for col_sql in (
             "ALTER TABLE positions ADD COLUMN partial_taken INTEGER DEFAULT 0",
             "ALTER TABLE positions ADD COLUMN setup_type TEXT",
+            "ALTER TABLE positions ADD COLUMN lowest_price REAL",
         ):
             try:
                 c.execute(col_sql)
@@ -187,7 +189,7 @@ class Database:
 
     def save_position(self, symbol, entry_price, qty, stop_loss, take_profit,
                       trailing=False, highest_price=None, partial_taken=False,
-                      entry_ts=None, setup_type=None) -> None:
+                      entry_ts=None, setup_type=None, lowest_price=None) -> None:
         """Upsert a position record into the positions table.
 
         If setup_type is None and the symbol already exists in the table, the
@@ -204,25 +206,31 @@ class Database:
             partial_taken: Whether a partial profit has already been taken.
             entry_ts: ISO timestamp of entry; defaults to current UTC if omitted.
             setup_type: Strategy label for the position.
+            lowest_price: Lowest price seen since entry, used for MAE review.
 
         Returns:
             None.
         """
         conn = sqlite3.connect(self.db_path, timeout=10)
-        if setup_type is None:
-            row = conn.execute(
-                "SELECT setup_type FROM positions WHERE symbol=?", (symbol,)
-            ).fetchone()
-            if row:
+        row = conn.execute(
+            "SELECT setup_type, highest_price, lowest_price FROM positions WHERE symbol=?", (symbol,)
+        ).fetchone()
+        if row:
+            if setup_type is None:
                 setup_type = row[0]
+            if highest_price is None:
+                highest_price = row[1]
+            if lowest_price is None:
+                lowest_price = row[2]
         conn.execute(
             """INSERT OR REPLACE INTO positions
                (symbol, entry_price, qty, stop_loss, take_profit, entry_ts,
-                trailing, highest_price, partial_taken, setup_type)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                trailing, highest_price, lowest_price, partial_taken, setup_type)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (symbol, entry_price, qty, stop_loss, take_profit,
              entry_ts or datetime.now(timezone.utc).isoformat(),
-             int(trailing), highest_price or entry_price, int(partial_taken), setup_type),
+             int(trailing), highest_price or entry_price, lowest_price or entry_price,
+             int(partial_taken), setup_type),
         )
         conn.commit()
         conn.close()

@@ -42,10 +42,14 @@ MAX_TOTAL_EXPOSURE_PCT = 0.80       # hard ceiling 80% of equity  margin gives t
 MIN_TOTAL_EXPOSURE_PCT = 0.30       # deploy at least 30% when conditions allow
 
 # Position limits
-MAX_CONCURRENT_POSITIONS = 999         # no hard cap; daily capital cap is the real governor
+MAX_CONCURRENT_POSITIONS = 4           # keep the scalp book small enough to manage exits cleanly
 MAX_POSITION_SIZE        = MAX_DAILY_CAPITAL  # updated alongside MAX_DAILY_CAPITAL each morning
 MIN_POSITION_SIZE        = 500.0       # skip trades where qty × price < $500 — micro-positions waste trade slots
-MAX_TRADES_PER_DAY       = 999         # effectively unlimited; real governor is concurrent cap + daily capital
+MAX_TRADES_PER_DAY       = 8           # avoid death-by-a-thousand-cuts overtrading
+MAX_DAILY_LOSING_TRADES  = 2           # after two realized losses, stand aside for the day
+DAILY_LOSS_TIGHTEN_AFTER = 1           # after one loss, require only elite continuation setups
+POST_LOSS_MIN_SCORE      = 9.5
+POST_LOSS_MIN_CONF       = 9
 
 # Conviction-weighted position sizing.
 # Each entry is (min_signal_score, fraction_of_MAX_DAILY_CAPITAL).
@@ -53,9 +57,9 @@ MAX_TRADES_PER_DAY       = 999         # effectively unlimited; real governor is
 # Actual cap = min(intended, remaining daily capital)  never exceeds what's left.
 # Max 15% of equity per trade keeps concentration risk manageable across 8 positions.
 CONVICTION_TIERS = [
-    (8.5, 0.18),   # high-conviction  (=8.5): up to 18% of daily capital (~$3,600)
-    (7.5, 0.14),   # strong           (=7.5): up to 14%                   (~$2,800)
-    (0.0, 0.09),   # below 7.5:               up to  9%                   (~$1,800)
+    (9.5, 0.12),   # elite continuation: up to 12% of daily capital (~$2,400)
+    (8.5, 0.08),   # high-conviction:    up to  8%                  (~$1,600)
+    (0.0, 0.05),   # anything else that passes: 5%                  (~$1,000)
 ]
 
 # High-conviction threshold: allows a second position in the same sector bucket
@@ -93,7 +97,7 @@ EARLY_THRUST_MAX_OFF_HIGH = -0.25  # >0.25% below session high → already fadin
 # The score already penalises extension; this hard-stops outright chasing.
 # 1.5% matches the penalty trigger in signal_scorer — once the score deducts,
 # we also refuse to execute rather than letting a 10/10 score override it.
-MAX_EMA21_EXTENSION_PCT = 0.013  # tightened from 1.5% — bar-timing noise at 1.5% let IONQ slip through
+MAX_EMA21_EXTENSION_PCT = 0.008  # scalp mode: refuse entries already >0.8% above EMA21
 
 # Entry momentum gate.
 # Requires the stock to be actively rising at the moment of entry.
@@ -104,10 +108,10 @@ ENTRY_MOMENTUM_MIN_PCT = 0.05   # price must be at least 0.05% above where it wa
 
 
 # Quality filters
-MIN_REWARD_TO_RISK    = 2.0         # minimum 2:1 R:R  cut losses fast, let winners run
+MIN_REWARD_TO_RISK    = 0.75        # scalp mode: small target is acceptable only with strict entry gates
 MIN_SIGNAL_CONFIDENCE = 6           # hard floor
-MIN_VOL_RATIO_ENTRY   = 0.7         # require stock is on pace for =70% of avg daily volume (time-adjusted)
-MAX_SPREAD_PCT        = 0.02        # max 2.0% bid-ask spread  IEX quotes are wider than NBBO; true NBBO for liquid stocks is ~0.01%
+MIN_VOL_RATIO_ENTRY   = 1.0         # scalp entries need active tape, not just acceptable volume
+MAX_SPREAD_PCT        = 0.003       # max 0.30%; tiny-target scalps cannot survive wide spreads
 
 # Early-window vol_ratio relaxation
 # In the first 55 minutes after open (9:3510:30 ET), cumulative volume is still
@@ -116,14 +120,16 @@ MAX_SPREAD_PCT        = 0.02        # max 2.0% bid-ask spread  IEX quotes are wi
 # Option B: relax further for confirmed gap-and-go setups (gap = 2%, holding VWAP).
 EARLY_WINDOW_END_HOUR    = 10       # early window ends at start of 10:30 ET
 EARLY_WINDOW_END_MIN     = 30
-EARLY_WINDOW_VOL_RATIO   = 0.6     # Option A: general early-window floor (was 0.7)
-GAP_AND_GO_VOL_RATIO     = 0.5     # Option B: gap stocks floor (gap = 2% + above VWAP)
+EARLY_WINDOW_VOL_RATIO   = 0.9     # still relaxed, but tight enough for scalp execution
+GAP_AND_GO_VOL_RATIO     = 0.9     # gap stocks still need active volume
 GAP_AND_GO_MIN_VOL_PCT   = 2.0     # minimum gap % to qualify for Option B relaxation
 
 # Stop / take-profit defaults (initial bracket order)
-DEFAULT_STOP_LOSS_PCT   = 0.012  # initial stop: 1.2% below entry (or ATR-based if larger)
-DEFAULT_TAKE_PROFIT_PCT = 0.025  # fallback for DB default only  not the active exit
-ATR_STOP_MULTIPLIER     = 1.5   # initial stop placed at 1.5 ATR from entry
+DEFAULT_STOP_LOSS_PCT   = 0.0035  # scalp stop cap: ~0.35% below entry
+DEFAULT_TAKE_PROFIT_PCT = 0.0030  # scalp target: ~0.30% above entry
+ATR_STOP_MULTIPLIER     = 0.75    # use a fraction of 5-min ATR, capped by scalp stop bounds
+SCALP_MIN_STOP_PCT      = 0.0025  # do not use stops tighter than normal quote noise
+SCALP_MAX_STOP_PCT      = 0.0045  # skip/size around a maximum practical scalp stop
 
 # Step-trailing stop parameters
 # Phase 1 (breakeven): when price reaches entry + BREAKEVEN_TRIGGER_PCT,
@@ -131,14 +137,13 @@ ATR_STOP_MULTIPLIER     = 1.5   # initial stop placed at 1.5 ATR from entry
 # Phase 2 (step-trail): each position-management tick, while
 #   current_price = current_stop  (1 + TRAIL_STEP_TRIGGER_PCT),
 #   step the stop up by TRAIL_STEP_SIZE_PCT.  Loop catches large price jumps.
-BREAKEVEN_TRIGGER_PCT  = 0.002  # +0.2% gain triggers the breakeven move
-BREAKEVEN_STOP_BUFFER  = 0.001  # stop set to entry  (1 - 0.001); 0.1% below entry
-TRAIL_STEP_TRIGGER_PCT = 0.003  # stop steps for every +0.3% above the current stop
-TRAIL_STEP_SIZE_PCT    = 0.001  # each step raises the stop by 0.1%
+BREAKEVEN_TRIGGER_PCT  = 0.0025 # +0.25% gain triggers protection
+BREAKEVEN_STOP_BUFFER  = 0.0005 # stop set to entry +0.05% to cover tiny profit/cost buffer
+TRAIL_STEP_TRIGGER_PCT = 0.0015 # stop steps for every +0.15% above the current stop
+TRAIL_STEP_SIZE_PCT    = 0.0010 # each step raises the stop by 0.10%
 
-# Safety TP for bracket-order validity  set far above entry so the Alpaca TP leg
-# never fires intraday.  The step-trailing stop is the real exit mechanism.
-BRACKET_TP_SAFETY = 3.0  # TP = entry  3.0 (200% above entry  unreachable intraday)
+# Scalp bracket take-profit. The bracket TP is now intentionally reachable.
+BRACKET_TP_SAFETY = 1.003
 
 # Confidence-scaled position sizing
 # Higher conviction signals get proportionally larger size.
@@ -211,14 +216,24 @@ STUDY_END_HOUR          = 9    # study ends at 9:30 ET
 STUDY_END_MIN           = 30   # trading begins at the open
 MARKET_CLOSE_HOUR       = 15
 MARKET_CLOSE_MIN        = 45   # last entry window closes at 3:45
-MIN_ENTRY_RUNWAY_MINUTES = 90   # require enough time for breakeven/time-stop logic to work
+MIN_ENTRY_RUNWAY_MINUTES = 45   # scalp entries need enough time for breakeven/time-stop logic to work
 
 # Prime entry window  highest-quality momentum occurs in the first 45 min after open.
 # Outside this window, only very high conviction setups are allowed through.
 PRIME_ENTRY_END_HOUR    = 10
 PRIME_ENTRY_END_MIN     = 15
-MIDDAY_ENTRY_MIN_SCORE  = 9.0  # signal score required outside prime window
-MIDDAY_ENTRY_MIN_CONF   = 8    # signal confidence required outside prime window
+MIDMORNING_ENTRY_END_HOUR  = 11
+MIDMORNING_ENTRY_END_MIN   = 0
+MIDMORNING_ENTRY_MIN_SCORE = 9.0  # 10:15-11:00 still has valid momentum, but require strong setups
+MIDMORNING_ENTRY_MIN_CONF  = 8
+MIDDAY_ENTRY_MIN_SCORE  = 9.5  # signal score required outside prime window
+MIDDAY_ENTRY_MIN_CONF   = 9    # signal confidence required outside prime window
+POWER_HOUR_ENTRY_MIN_SCORE = 9.0  # afternoon trend continuation window; still require strong setups
+POWER_HOUR_ENTRY_MIN_CONF  = 8
+
+# Elite momentum exception: allow 2/3 15-min alignment only when EMA and VWAP
+# are bullish and the missing condition is MACD confirmation.
+ELITE_15MIN_GATE_MIN_SCORE = 9.5
 
 # Scheduler fires every SCAN_INTERVAL_MINUTES throughout the day.
 # During high-volume windows (9:3511:00 and 2:303:45) every cycle runs a full scan.
@@ -231,6 +246,8 @@ MIDDAY_SCAN_INTERVAL_MINUTES = 20   # full scan every 20 min during midday low-v
 # Each cycle: fetch top movers + most-actives from Alpaca, merge with WATCHLIST.
 # Falls back gracefully to WATCHLIST if the screener API is unavailable.
 UNIVERSE_MAX_SYMBOLS = 100      # 74 watchlist + 26 discovery; fits in 90s budget
+SCAN_STAGE1_CANDIDATE_LIMIT = 40  # max symbols that receive 15m/daily enrichment each scan
+SCAN_5M_HISTORY_DAYS = 5       # enough for intraday context without overloading IEX bars
 SCREENER_MIN_PRICE   = 3.0      # filter out sub-$3 micro-cap garbage; spread + dollar-vol guard the rest
 SCREENER_MAX_PRICE   = 500.0    # filter out very expensive illiquid names
 
@@ -242,6 +259,11 @@ SCREENER_MAX_PRICE   = 500.0    # filter out very expensive illiquid names
 SCREENER_SNAPSHOT_SLOTS   = 15   # broad market sweep  top N non-watchlist stocks
 SCREENER_ACTIVES_SLOTS    = 7    # real-time volume leaders not already found
 SCREENER_GAINERS_SLOTS    = 4    # catalyst/% movers not already found (SNDK-type plays)
+SNAPSHOT_SCREEN_MAX_SECONDS = 90  # hard wall-clock cap for the broad Alpaca snapshot sweep
+BARS_MULTI_BATCH_SIZE = 20         # smaller batches avoid IEX multi-symbol bar stalls
+BARS_MULTI_TIMEOUT_SECONDS = 25    # per-timeframe wall-clock cap
+SINGLE_BARS_TIMEOUT_SECONDS = 20   # hard cap for per-symbol bars during final BUY validation
+LATEST_QUOTE_TIMEOUT_SECONDS = 8   # hard cap for quote lookup before order submission
 
 # GFV (good-faith violation) avoidance
 # A GFV occurs when you buy with unsettled proceeds AND sell before those proceeds
@@ -325,11 +347,19 @@ TIME_STOP_MIN_GAIN_PCT = 0.0      # exit if position is in the red (pnl < 0) at 
 # full time-stop window turns a weak entry into a larger loss.
 BREAKEVEN_FEASIBILITY_MULTIPLIER = 1.5   # require 15m move >= breakeven trigger * this
 EARLY_FAILURE_MINUTES            = 15    # earliest age to judge a failed entry
-EARLY_FAILURE_MAX_RED_PCT        = -0.15 # exit if at/below this unrealized % loss
-EARLY_FAILURE_MIN_15M_MOMENTUM   = 0.05  # if still not climbing after entry, cut it
+EARLY_FAILURE_MAX_RED_PCT        = -0.10 # scalp failure: exit earlier if it does not work
+EARLY_FAILURE_MIN_15M_MOMENTUM   = 0.10  # if still not climbing after entry, cut it
+
+# Scalp continuation entry gate. A buy must be a pullback/reclaim followed by
+# continuation, not just a high score while price is already extended.
+REQUIRE_PULLBACK_RECLAIM             = True
+PULLBACK_TOUCH_TOLERANCE_PCT         = 0.0025
+MAX_ENTRY_DISTANCE_FROM_SUPPORT_PCT  = 0.006
+CONTINUATION_MIN_15M_PCT             = 0.10
+MIN_RISING_BARS_FOR_CONTINUATION     = 2
 
 # Partial profit (scale-out)
-PARTIAL_PROFIT_TRIGGER_PCT = 0.50  # sell 50% of shares when price hits 50% of TP range
+PARTIAL_PROFIT_TRIGGER_PCT = 0.50  # sell 50% when halfway to scalp TP, if bracket has not filled first
 
 # Correlation guard
 MAX_HOLDING_CORRELATION    = 0.70  # block new position if 10-day return corr > this (tightened for 8-position portfolio)

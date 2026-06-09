@@ -33,12 +33,11 @@ class ScannerMixin:
             c["symbol"] for c in (daily_plan or {}).get("top_candidates", [])
         }
 
-        log.info("Fetching bars for %d symbols across 3 timeframes", len(scan_list))
-        bars_5m  = self.broker.get_bars_multi(scan_list, "5Min",  days=10)
-        bars_15m = self.broker.get_bars_multi(scan_list, "15Min", days=5)
-        bars_day = self.broker.get_bars_multi(scan_list, "1Day",  days=30)
-        log.info("Bars received  5m:%d  15m:%d  daily:%d symbols",
-                 len(bars_5m), len(bars_15m), len(bars_day))
+        log.info("Fetching 5m bars for %d symbols", len(scan_list))
+        bars_5m = self.broker.get_bars_multi(
+            scan_list, "5Min", days=getattr(config, "SCAN_5M_HISTORY_DAYS", 5)
+        )
+        log.info("Bars received  5m:%d symbols", len(bars_5m))
 
         spy_5m = bars_5m.get("SPY")
         if spy_5m is None or spy_5m.empty:
@@ -79,6 +78,7 @@ class ScannerMixin:
             df = bars_5m.get(symbol)
             if df is None or df.empty or len(df) < 25:
                 return None
+            _t_sym_start = _time.monotonic()
             _t0 = _time.monotonic()
             df  = self.indicators.compute_indicators(df)
             _dt_ind = _time.monotonic() - _t0
@@ -114,12 +114,9 @@ class ScannerMixin:
             sig.update(self.indicators.detect_liquidity_sweep(df, key_levels=self._key_levels_cache.get(symbol)))
             sig.update(self.indicators.compute_volume_profile(df))
 
-            _t0 = _time.monotonic()
-            df_15  = bars_15m.get(symbol)
-            df_day = bars_day.get(symbol)
-            bias_15  = self.indicators.get_higher_tf_bias(df_15)
-            bias_day = self.indicators.get_higher_tf_bias(df_day)
-            _dt_htf = _time.monotonic() - _t0
+            bias_15 = {}
+            bias_day = {}
+            _dt_htf = 0.0
 
             # True time-slot RVOL for day trading.
             # Compares today's cumulative volume through bar N to the average
@@ -164,10 +161,10 @@ class ScannerMixin:
                     else:
                         sig["float_tier"] = "large"
 
-            key_levels = self.indicators.get_key_levels(df, df_day)
+            key_levels = self.indicators.get_key_levels(df, None)
             self._key_levels_cache[symbol] = key_levels
 
-            _dt_sym = _time.monotonic() - _t0 + _dt_ind + _dt_htf
+            _dt_sym = _time.monotonic() - _t_sym_start
             if _dt_sym > 0.5:
                 log.warning("SLOW symbol %s: total=%.2fs ind=%.2fs htf=%.2fs",
                             symbol, _dt_sym, _dt_ind, _dt_htf)
@@ -200,8 +197,75 @@ class ScannerMixin:
         pool.shutdown(wait=False, cancel_futures=True)
 
         log.info("Symbol loop done: %d candidates in %.1fs", len(raw), _time.monotonic() - _t_loop_start)
+        prelim_min = (
+            self.session_overrides.get("signal_score_min_midday")
+            if midday else
+            self.session_overrides.get("signal_score_min_normal")
+        ) if self.session_overrides is not None else (
+            config.MIDDAY_MIN_SIGNAL_SCORE if midday else config.NORMAL_MIN_SIGNAL_SCORE
+        )
+        prelim_floor = max(3.5, float(prelim_min) - 2.5)
+        prelim = []
+        for item in raw:
+            sig = item.get("indicators", {})
+            mom_score, mom_ev = self.signal_scorer.score_setup(sig, {}, {})
+            gap_score, gap_ev = self.signal_scorer.score_gap_and_go(sig)
+            vwap_score, vwap_ev = self.signal_scorer.score_vwap_reclaim(sig)
+            best_score, best_ev, best_type = max(
+                [
+                    (gap_score, gap_ev, "gap_and_go"),
+                    (vwap_score, vwap_ev, "vwap_reclaim"),
+                    (mom_score, mom_ev, "momentum"),
+                ],
+                key=lambda x: x[0],
+            )
+            if best_score >= prelim_floor:
+                row = dict(item)
+                row["prelim_score"] = best_score
+                row["prelim_setup_type"] = best_type
+                row["prelim_evidence"] = best_ev[:4]
+                prelim.append(row)
+        prelim.sort(key=lambda x: x["prelim_score"], reverse=True)
+
+        htf_limit = int(getattr(config, "SCAN_STAGE1_CANDIDATE_LIMIT", 40))
+        htf_candidates = prelim[:htf_limit]
+        htf_symbols = [item["symbol"] for item in htf_candidates]
+        log.info(
+            "Prelim candidates: %d/%d >= %.1f; enriching top %d with 15m/daily",
+            len(prelim), len(raw), prelim_floor, len(htf_symbols),
+        )
+
+        bars_15m = {}
+        bars_day = {}
+        if htf_symbols:
+            with _cf.ThreadPoolExecutor(max_workers=2) as htf_pool:
+                fut_15m = htf_pool.submit(self.broker.get_bars_multi, htf_symbols, "15Min", 5)
+                fut_day = htf_pool.submit(self.broker.get_bars_multi, htf_symbols, "1Day", 30)
+                try:
+                    bars_15m = fut_15m.result(timeout=getattr(config, "BARS_MULTI_TIMEOUT_SECONDS", 25) + 5)
+                except Exception as exc:
+                    log.warning("15m enrichment fetch failed/timed out: %s", exc)
+                    fut_15m.cancel()
+                try:
+                    bars_day = fut_day.result(timeout=getattr(config, "BARS_MULTI_TIMEOUT_SECONDS", 25) + 5)
+                except Exception as exc:
+                    log.warning("daily enrichment fetch failed/timed out: %s", exc)
+                    fut_day.cancel()
+        log.info("Bars received  15m:%d  daily:%d symbols", len(bars_15m), len(bars_day))
+
+        for item in htf_candidates:
+            symbol = item["symbol"]
+            df_15 = bars_15m.get(symbol)
+            df_day = bars_day.get(symbol)
+            item["bias_15min"] = self.indicators.get_higher_tf_bias(df_15)
+            item["bias_daily"] = self.indicators.get_higher_tf_bias(df_day)
+            key_levels = self.indicators.get_key_levels(bars_5m.get(symbol), df_day)
+            if key_levels:
+                item["key_levels"] = key_levels
+                self._key_levels_cache[symbol] = key_levels
+
         scored = self.signal_scorer.filter_watchlist(
-            raw, midday=midday, regime=regime, session_overrides=self.session_overrides
+            htf_candidates, midday=midday, regime=regime, session_overrides=self.session_overrides
         )
         log.info("Watchlist: %d/%d symbols passed signal filter (midday=%s)",
                  len(scored), len(raw), midday)

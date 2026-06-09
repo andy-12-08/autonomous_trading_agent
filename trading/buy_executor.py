@@ -103,6 +103,57 @@ class BuyExecutorMixin:
             log.warning("Daily drawdown guard - no new buys. effective_pnl=%.0f", effective_daily_pnl)
             return None
 
+        today = datetime.now(self._ET).date().isoformat()
+        recent = self.database.get_recent_decisions(300)
+        today_closes = [
+            row for row in recent
+            if (row.get("ts") or "").startswith(today)
+            and row.get("action") in ("SELL", "PARTIAL_SELL")
+            and row.get("pnl") is not None
+        ]
+        daily_losses = sum(1 for row in today_closes if (row.get("pnl") or 0) < 0)
+        symbol_lost_today = any(
+            row.get("symbol") == symbol and (row.get("pnl") or 0) < 0
+            for row in today_closes
+        )
+        if symbol_lost_today:
+            self._record_buy_skip(
+                symbol,
+                d.get("entry_price"),
+                "Same-day symbol loss cooldown: do not re-enter a ticker after it already failed today",
+                signal_score,
+                "SYMBOL_LOSS_COOLDOWN",
+            )
+            log.info("SYMBOL LOSS cooldown %s: previous same-day loss", symbol)
+            return None
+        if daily_losses >= config.MAX_DAILY_LOSING_TRADES:
+            self._record_buy_skip(
+                symbol,
+                d.get("entry_price"),
+                f"Daily loss stop: {daily_losses} losing trades today; standing aside",
+                signal_score,
+                "DAILY_LOSS_STOP",
+            )
+            log.warning("Daily loss stop - no new buys after %d losses", daily_losses)
+            return None
+        if daily_losses >= config.DAILY_LOSS_TIGHTEN_AFTER:
+            confidence_hint = int(float(d.get("signal_confidence") or 0))
+            score_hint = float(signal_score or 0)
+            if score_hint < config.POST_LOSS_MIN_SCORE or confidence_hint < config.POST_LOSS_MIN_CONF:
+                self._record_buy_skip(
+                    symbol,
+                    d.get("entry_price"),
+                    (
+                        f"Post-loss throttle: after {daily_losses} loss(es), need "
+                        f"score>={config.POST_LOSS_MIN_SCORE} and conf>={config.POST_LOSS_MIN_CONF}; "
+                        f"got score={score_hint:.1f}, conf={confidence_hint}"
+                    ),
+                    signal_score,
+                    "POST_LOSS_THROTTLE",
+                )
+                log.info("POST LOSS throttle %s: score=%.1f conf=%d", symbol, score_hint, confidence_hint)
+                return None
+
         setup_type_hint = d.get("setup_type") or d.get("setup_type_hint") or ""
         _suppression_key = setup_type_hint or "momentum"
         if suppressed_setups and _suppression_key in suppressed_setups:
@@ -197,6 +248,29 @@ class BuyExecutorMixin:
             df = self.indicators.compute_indicators(df)
             atr = float(df["atr"].iloc[-1]) if not df.empty else price * 0.01
             sig = self.indicators.get_signal_summary(df) if not df.empty else {}
+            if not df.empty and len(df) >= 3 and sig:
+                last = df.iloc[-1]
+                prev = df.iloc[-2]
+                recent = df.tail(3)
+                recent_low = float(recent["low"].min())
+                ema9 = float(sig.get("ema9") or 0)
+                ema21 = float(sig.get("ema21") or 0)
+                vwap = float(sig.get("vwap") or 0)
+                support_levels = [v for v in (ema9, ema21, vwap) if v > 0]
+                nearest_support = max([v for v in support_levels if v <= price] or support_levels or [0])
+                touch_line = nearest_support * (1 + config.PULLBACK_TOUCH_TOLERANCE_PCT) if nearest_support else 0
+                sig.update({
+                    "last_high": round(float(last["high"]), 4),
+                    "last_low": round(float(last["low"]), 4),
+                    "prev_high": round(float(prev["high"]), 4),
+                    "recent_low_3": round(recent_low, 4),
+                    "close_above_prev_high": bool(float(last["close"]) > float(prev["high"])),
+                    "nearest_entry_support": round(nearest_support, 4) if nearest_support else 0.0,
+                    "pullback_touched_support": bool(touch_line and recent_low <= touch_line),
+                    "entry_distance_from_support_pct": round(
+                        (price - nearest_support) / nearest_support if nearest_support else 0.0, 5
+                    ),
+                })
         except Exception as exc:
             log.warning("Could not fetch bars/indicators for %s: %s - using ATR fallback", symbol, exc)
             atr = price * 0.01
@@ -456,6 +530,7 @@ class BuyExecutorMixin:
         gate_ctx = self._build_entry_gate_context(symbol, sig)
 
         prime_end = config.PRIME_ENTRY_END_HOUR * 60 + config.PRIME_ENTRY_END_MIN
+        midmorning_end = config.MIDMORNING_ENTRY_END_HOUR * 60 + config.MIDMORNING_ENTRY_END_MIN
         close_min = config.MARKET_CLOSE_HOUR * 60 + config.MARKET_CLOSE_MIN
 
         if gate_ctx["cur_min"] >= close_min:
@@ -481,24 +556,49 @@ class BuyExecutorMixin:
 
         if gate_ctx["cur_min"] > prime_end:
             decision_conf = int(d.get("signal_confidence") or d.get("confidence") or 0)
-            if signal_score < config.MIDDAY_ENTRY_MIN_SCORE or decision_conf < config.MIDDAY_ENTRY_MIN_CONF:
+            in_midmorning = gate_ctx["cur_min"] < midmorning_end
+            in_power_hour = any(
+                (sh * 60 + sm) <= gate_ctx["cur_min"] <= (eh * 60 + em)
+                and sh >= 12
+                for sh, sm, eh, em in config.HIGH_VOLUME_WINDOWS
+            )
+            if in_midmorning:
+                min_score = config.MIDMORNING_ENTRY_MIN_SCORE
+                min_conf = config.MIDMORNING_ENTRY_MIN_CONF
+                gate_label = "mid-morning"
+            elif in_power_hour:
+                min_score = config.POWER_HOUR_ENTRY_MIN_SCORE
+                min_conf = config.POWER_HOUR_ENTRY_MIN_CONF
+                gate_label = "power-hour"
+            else:
+                min_score = config.MIDDAY_ENTRY_MIN_SCORE
+                min_conf = config.MIDDAY_ENTRY_MIN_CONF
+                gate_label = "midday"
+            if signal_score < min_score or decision_conf < min_conf:
                 self._record_buy_skip(
                     symbol,
                     price,
                     (
-                        f"Midday gate: score {signal_score:.1f}<{config.MIDDAY_ENTRY_MIN_SCORE} "
-                        f"or conf {decision_conf}<{config.MIDDAY_ENTRY_MIN_CONF} outside prime window"
+                        f"{gate_label.title()} gate: score {signal_score:.1f}<{min_score} "
+                        f"or conf {decision_conf}<{min_conf} outside prime window"
                     ),
                     signal_score,
-                    "MIDDAY_GATE",
+                    (
+                        "MIDMORNING_GATE"
+                        if in_midmorning else
+                        "POWER_HOUR_GATE"
+                        if in_power_hour else
+                        "MIDDAY_GATE"
+                    ),
                 )
                 log.info(
-                    "Midday gate %s: score=%.1f conf=%d - need >=%.1f/>=%d outside 9:30-10:15 prime window",
+                    "%s gate %s: score=%.1f conf=%d - need >=%.1f/>=%d outside 9:30-10:15 prime window",
+                    gate_label.title(),
                     symbol,
                     signal_score,
                     decision_conf,
-                    config.MIDDAY_ENTRY_MIN_SCORE,
-                    config.MIDDAY_ENTRY_MIN_CONF,
+                    min_score,
+                    min_conf,
                 )
                 return None
 
@@ -522,6 +622,52 @@ class BuyExecutorMixin:
             log.info("MOMENTUM gate %s: falling at entry (bars_rising=%d, 15m=%+.2f%%) - skipping",
                      symbol, _bars_rising, _price_vs_3ago)
             return None
+
+        if config.REQUIRE_PULLBACK_RECLAIM and not _gap_go:
+            _ema9 = float(sig.get("ema9") or 0)
+            _ema21 = float(sig.get("ema21") or 0)
+            _above_vwap = bool(sig.get("above_vwap", False))
+            _trend_aligned = _above_vwap and _ema9 > _ema21 > 0
+            _pullback_touched = bool(sig.get("pullback_touched_support", False))
+            _continuation_break = bool(
+                sig.get("close_above_prev_high")
+                or sig.get("above_orb_30")
+                or sig.get("vwap_cross_up")
+            )
+            _support_dist = float(sig.get("entry_distance_from_support_pct") or 0.0)
+            _strict_momentum = (
+                _last_bullish
+                and _bars_rising >= config.MIN_RISING_BARS_FOR_CONTINUATION
+                and _price_vs_3ago >= config.CONTINUATION_MIN_15M_PCT
+            )
+            if not _trend_aligned:
+                reason = "Continuation gate: price must be above VWAP with EMA9>EMA21 before entry"
+                self._record_buy_skip(symbol, price, reason, signal_score, "CONTINUATION_GATE")
+                log.info("CONTINUATION gate %s: trend not aligned", symbol)
+                return None
+            if _support_dist > config.MAX_ENTRY_DISTANCE_FROM_SUPPORT_PCT:
+                reason = (
+                    f"Pullback gate: entry {_support_dist:.2%} above nearest support "
+                    f"(max {config.MAX_ENTRY_DISTANCE_FROM_SUPPORT_PCT:.2%}); wait for cleaner pullback"
+                )
+                self._record_buy_skip(symbol, price, reason, signal_score, "PULLBACK_GATE")
+                log.info("PULLBACK gate %s: %.2f%% from support", symbol, _support_dist * 100)
+                return None
+            if not (_pullback_touched or _vwap_reclaim):
+                reason = "Pullback gate: no recent touch/reclaim of VWAP/EMA support before continuation"
+                self._record_buy_skip(symbol, price, reason, signal_score, "PULLBACK_GATE")
+                log.info("PULLBACK gate %s: no recent support touch", symbol)
+                return None
+            if not (_continuation_break and _strict_momentum):
+                reason = (
+                    f"Continuation gate: need breakout/reclaim plus active climb; "
+                    f"break={_continuation_break}, last_green={_last_bullish}, "
+                    f"bars={_bars_rising}/3, 15m={_price_vs_3ago:+.2f}%"
+                )
+                self._record_buy_skip(symbol, price, reason, signal_score, "CONTINUATION_GATE")
+                log.info("CONTINUATION gate %s: break=%s bars=%d 15m=%+.2f%%",
+                         symbol, _continuation_break, _bars_rising, _price_vs_3ago)
+                return None
 
         breakeven_move_pct = config.BREAKEVEN_TRIGGER_PCT * 100
         required_15m_pct = breakeven_move_pct * config.BREAKEVEN_FEASIBILITY_MULTIPLIER
